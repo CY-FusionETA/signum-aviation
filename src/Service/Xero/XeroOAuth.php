@@ -19,8 +19,16 @@ final class XeroOAuth
     private const TOKEN       = 'https://identity.xero.com/connect/token';
     private const CONNECTIONS = 'https://api.xero.com/connections';
 
+    // Purchase Orders are reached through accounting.invoices, NOT
+    // accounting.transactions: the Xero apps we connect with do not grant
+    // accounting.transactions, and asking for it makes login.xero.com bounce
+    // the user to its own error page before the consent screen ever renders.
+    // This is the same set Starship pushes POs with.
     public const DEFAULT_SCOPES =
-        'openid profile email accounting.transactions accounting.contacts accounting.settings offline_access';
+        'openid profile email accounting.invoices accounting.contacts accounting.settings accounting.attachments offline_access';
+
+    /** Scopes every connection needs; never bisected when diagnosing a refusal. */
+    private const CORE_SCOPES = ['openid', 'profile', 'email', 'offline_access'];
 
     // Connection params come from the DB (Settings) so the module can be
     // reconnected to a new org without editing config files.
@@ -62,16 +70,69 @@ final class XeroOAuth
         return (string)(self::token()['tenant_name'] ?? '');
     }
 
-    /** Build the consent URL; $state ties the callback back to this session. */
-    public static function authorizeUrl(string $state): string
+    /**
+     * Build the consent URL; $state ties the callback back to this session.
+     * $scopes overrides the configured set (used when diagnosing a refusal).
+     */
+    public static function authorizeUrl(string $state, ?string $scopes = null): string
     {
         return self::AUTHORIZE . '?' . http_build_query([
             'response_type' => 'code',
             'client_id'     => self::clientId(),
             'redirect_uri'  => self::redirectUri(),
-            'scope'         => self::scopes(),
+            'scope'         => $scopes ?? self::scopes(),
             'state'         => $state,
         ]);
+    }
+
+    /**
+     * Would Xero refuse this consent request? login.xero.com answers a 302 to
+     * /identity/error — an opaque page with only an errorId — when a parameter
+     * is bad, most often a scope the Xero app does not grant. Checking first
+     * lets us say what is wrong instead of dumping the user on that page.
+     *
+     * Returns null when the request is good, else a human-readable reason.
+     * Fails OPEN: if the check itself cannot run (network, timeout), we return
+     * null and let the browser go to Xero as before.
+     */
+    public static function authorizeProblem(string $state = 'preflight'): ?string
+    {
+        if (!self::refused(self::authorizeUrl($state))) return null;
+
+        // Refused. Is it the scopes, or the client id / redirect URI?
+        $core = implode(' ', self::CORE_SCOPES);
+        if (self::refused(self::authorizeUrl($state, $core))) {
+            return 'Xero refused the connection before the consent screen. The Client ID or the '
+                 . 'redirect URI is not accepted — check the Client ID below, and that '
+                 . self::redirectUri() . ' is registered verbatim in your Xero app.';
+        }
+
+        // Core scopes are fine, so bisect the extras to name the offenders.
+        $bad = [];
+        foreach (array_diff(explode(' ', preg_replace('/\s+/', ' ', trim(self::scopes()))), self::CORE_SCOPES) as $s) {
+            if ($s !== '' && self::refused(self::authorizeUrl($state, $core . ' ' . $s))) $bad[] = $s;
+        }
+        if (!$bad) return 'Xero refused the connection request. Check the scopes and redirect URI below.';
+
+        return 'Your Xero app does not grant ' . implode(', ', $bad) . '. Remove '
+             . (count($bad) === 1 ? 'it' : 'them') . ' in Xero settings below (purchase orders work through '
+             . 'accounting.invoices), or enable the scope on the app at developer.xero.com.';
+    }
+
+    /** True if login.xero.com bounces this consent URL to its error page. */
+    private static function refused(string $url): bool
+    {
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_FOLLOWLOCATION => false,
+            CURLOPT_TIMEOUT        => 6,
+            CURLOPT_CONNECTTIMEOUT => 4,
+        ]);
+        $ok  = curl_exec($ch) !== false;
+        $loc = (string)curl_getinfo($ch, CURLINFO_REDIRECT_URL);
+        curl_close($ch);
+        return $ok && str_contains($loc, '/identity/error');
     }
 
     /** Exchange an authorization code, discover the tenant, and persist tokens. */

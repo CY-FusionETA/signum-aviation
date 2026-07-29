@@ -27,7 +27,9 @@ return [
         // Must match the redirect URI registered in your Xero app EXACTLY.
         // If blank, defaults to <base_url>/xero/callback.
         'redirect_uri'  => '',
-        'scopes'        => 'openid profile email accounting.transactions accounting.contacts accounting.settings offline_access',
+        // Purchase orders are reached via accounting.invoices — accounting.transactions
+        // is not granted by these Xero apps and makes the consent screen fail to load.
+        'scopes'        => 'openid profile email accounting.invoices accounting.contacts accounting.settings accounting.attachments offline_access',
     ],
 
     // Which trip currency to stamp on the PO, by source entity. Leave a value

@@ -66,6 +66,9 @@ if ($path === '/settings' && $method === 'POST') {
 // --- Xero OAuth -----------------------------------------------------
 if ($path === '/xero/connect') {
     if (!XeroOAuth::isConfigured()) { $_SESSION['flash_err'] = 'Enter Client ID and Secret first, then Save.'; redirect('/'); }
+    // Ask Xero up front: a bad scope/redirect otherwise lands the user on
+    // login.xero.com's opaque error page with no way back.
+    if ($why = XeroOAuth::authorizeProblem()) { $_SESSION['flash_err'] = $why; redirect('/'); }
     $state = bin2hex(random_bytes(16)); $_SESSION['xero_state'] = $state;
     header('Location: ' . XeroOAuth::authorizeUrl($state)); exit;
 }
