@@ -13,8 +13,8 @@ server {
     listen [::]:80;
     server_name skyledger.example.com;               # <-- your domain
 
-    # Path to the repo's module4-leon-po/public directory:
-    root /var/www/signum-aviation/module4-leon-po/public;
+    # Path to the repo's public/ directory:
+    root /var/www/signum-aviation/public;
     index index.php;
 
     client_max_body_size 12m;                         # LEON PDF/CSV uploads

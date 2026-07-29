@@ -1,15 +1,15 @@
 # Deploying Skyledger (Module 4) on DigitalOcean
 
 Plain PHP 8 + SQLite, no build step. Target: an Ubuntu droplet with nginx + PHP-FPM.
-Everything below assumes the repo is cloned to `/var/www/signum-aviation` and the app is
-`/var/www/signum-aviation/module4-leon-po`.
+Everything below assumes the repo is cloned to `/var/www/signum-aviation` — the app lives at
+the repo root, so it serves at the domain root (no extra URL path segment).
 
 ## Fast path (script)
 
 ```bash
 sudo apt-get install -y git
 sudo git clone https://github.com/CY-FusionETA/signum-aviation.git /var/www/signum-aviation
-cd /var/www/signum-aviation/module4-leon-po
+cd /var/www/signum-aviation
 sudo bash deploy/setup.sh skyledger.fusioneta.com.my 8.3     # <domain> <php version>
 sudo certbot --nginx -d skyledger.fusioneta.com.my           # HTTPS (required by Xero)
 ```
@@ -40,8 +40,8 @@ connect Xero. That's it.
    ```
 
 5. **nginx** — copy `deploy/nginx.conf.example` to `/etc/nginx/sites-available/skyledger`,
-   edit `server_name`, `root` (must end in `/module4-leon-po/public`), and the
-   `fastcgi_pass` socket to match your PHP version; symlink into `sites-enabled`, then
+   edit `server_name`, `root` (must end in `/public`), and the `fastcgi_pass` socket to
+   match your PHP version; symlink into `sites-enabled`, then
    `sudo nginx -t && sudo systemctl reload nginx`.
 
 6. **HTTPS** — `sudo certbot --nginx -d your-domain`. Xero OAuth only allows plain `http`
@@ -59,7 +59,7 @@ connect Xero. That's it.
 
 ```bash
 cd /var/www/signum-aviation && sudo git pull
-cd module4-leon-po && php db/migrate.php        # migrate is safe to re-run (CREATE IF NOT EXISTS)
+php db/migrate.php                              # migrate is safe to re-run (CREATE IF NOT EXISTS)
 sudo chown -R www-data:www-data storage
 ```
 

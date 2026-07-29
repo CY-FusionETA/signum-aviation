@@ -1,13 +1,13 @@
 # Skyledger — Architecture
 
-Plain **PHP 8 + SQLite**, no framework, no build step (Starship design). One deployable app
-today: **`module4-leon-po/`** (LEON → Xero PO). Other modules will be added as sibling
-folders under this repo.
+Plain **PHP 8 + SQLite**, no framework, no build step (Starship design). The repo root **is**
+the Skyledger app (Module 4: LEON → Xero PO), so a deployment serves it at the domain root
+with no extra path segment.
 
 ## Request flow (Module 4)
 
 ```
-Browser ──HTTP──► nginx (root = module4-leon-po/public)
+Browser ──HTTP──► nginx (root = public/)
                      │  try_files → index.php  (front controller)
                      ▼
       public/index.php ── routes ─┬─ /login /logout           → auth (session + password)
@@ -28,7 +28,7 @@ The master list (`leon_trips`) is the shared reference: Modules 2/3 will match a
 supplier invoice to a trip in it, then reuse `LeonProcessor::createPosForIds()` to raise the
 PO before booking the bill.
 
-## File map (`module4-leon-po/`)
+## File map
 
 ### Entry points
 | File | Role |

@@ -16,7 +16,7 @@ DOMAIN="${1:-}"
 PHPV="${2:-8.3}"
 [ -z "$DOMAIN" ] && { echo "Usage: sudo bash deploy/setup.sh <domain> [php_version]"; exit 1; }
 
-# Resolve app dir = this script's parent's parent (…/module4-leon-po).
+# Resolve app dir = repo root (this script lives in <root>/deploy/).
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 echo "App dir: $APP_DIR"
 
@@ -51,7 +51,7 @@ chmod -R u+rwX "$APP_DIR/storage"
 echo "== nginx vhost =="
 VHOST=/etc/nginx/sites-available/skyledger
 sed -e "s#skyledger.example.com#$DOMAIN#" \
-    -e "s#/var/www/signum-aviation/module4-leon-po/public#$APP_DIR/public#" \
+    -e "s#/var/www/signum-aviation/public#$APP_DIR/public#" \
     -e "s#php8.3-fpm.sock#php${PHPV}-fpm.sock#" \
     "$APP_DIR/deploy/nginx.conf.example" > "$VHOST"
 ln -sf "$VHOST" /etc/nginx/sites-enabled/skyledger
