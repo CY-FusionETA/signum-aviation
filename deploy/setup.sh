@@ -23,7 +23,7 @@ echo "App dir: $APP_DIR"
 echo "== Installing PHP $PHPV, extensions, poppler, nginx =="
 apt-get update -y
 apt-get install -y "php${PHPV}-fpm" "php${PHPV}-sqlite3" "php${PHPV}-curl" "php${PHPV}-mbstring" \
-                   poppler-utils nginx
+                   "php${PHPV}-zip" "php${PHPV}-xml" poppler-utils nginx
 
 echo "== Writing config.php =="
 CONF="$APP_DIR/config/config.php"

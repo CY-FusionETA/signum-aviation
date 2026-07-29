@@ -22,9 +22,11 @@ connect Xero. That's it.
 1. **Install runtime**
    ```bash
    sudo apt-get update
-   sudo apt-get install -y php8.3-fpm php8.3-sqlite3 php8.3-curl php8.3-mbstring poppler-utils nginx
+   sudo apt-get install -y php8.3-fpm php8.3-sqlite3 php8.3-curl php8.3-mbstring \
+                           php8.3-zip php8.3-xml poppler-utils nginx
    ```
-   `poppler-utils` provides `pdftotext`, needed for LEON **PDF** import.
+   `poppler-utils` provides `pdftotext` (LEON **PDF** import); `php-zip` + `php-xml` are
+   needed for **XLSX** import.
 
 2. **Config** — `cp config/config.sample.php config/config.php`, then set:
    - `app.base_url` = `https://your-domain` (no trailing slash)

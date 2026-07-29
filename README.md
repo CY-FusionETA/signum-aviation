@@ -1,8 +1,8 @@
 # Skyledger — Module 4: LEON → Xero PO
 
-Imports a LEON **Flight Count** export (**CSV or PDF**) into a persistent **trip master
-list**, lets you pick trips, and creates one **DRAFT Purchase Order per trip** in the
-connected Xero organisation. That master list is the shared reference Modules 3 and 5 use
+Imports a LEON **Flight Count** export (**CSV, XLSX or PDF** — one or many files at once)
+into a persistent **trip master list**, lets you pick trips, and creates one **DRAFT
+Purchase Order per trip** in the connected Xero organisation. That master list is the shared reference Modules 3 and 5 use
 to reconcile supplier invoices and client invoices against.
 
 Built on the **Starship** design: plain PHP 8 + SQLite, no framework, no build step. The
@@ -14,12 +14,14 @@ trip re-creates in that org**.
 
 ## What it does
 
-1. **Import** a LEON Flight Count **CSV or PDF** into the trip master list. Header-driven,
-   so it copes with the Inc and Ltd exports having their columns in a different order.
-   Skips the title/date-range preamble and the `∑` total row; handles blank clients and
-   non-numeric trip numbers (`KZ2OS4`, `07-2026/76`); converts `dd-mm-yyyy` dates to ISO.
-   PDF import uses `pdftotext -layout` and slices each row at the header labels' character
-   offsets, so both column orders parse identically to the CSV.
+1. **Import** LEON Flight Count files — **CSV, XLSX or PDF, one or many at once** — into the
+   trip master list. Header-driven, so it copes with the Inc and Ltd exports having their
+   columns in a different order. Skips the title/date-range preamble and the `∑` total row;
+   handles blank clients and non-numeric trip numbers (`KZ2OS4`, `07-2026/76`); converts
+   `dd-mm-yyyy` dates to ISO. XLSX is read with a dependency-free reader (Excel date serials
+   converted automatically); PDF uses `pdftotext -layout` sliced at the header labels'
+   character offsets — all three formats parse identically. With multiple files, each file's
+   **entity is auto-detected from its name** (or force Inc/Ltd for the whole batch).
 2. **Pick trips** in the UI (checkboxes; rows already having a PO in the connected org are
    marked and locked).
 3. **Create a DRAFT Purchase Order** per selected trip:
@@ -44,8 +46,9 @@ trip re-creates in that org**.
 
 ## Requirements
 
-PHP **8.1+** with `pdo_sqlite`, `curl`, `mbstring`. `pdftotext` (poppler-utils) for PDF
-import. A web server for the OAuth redirect, or the built-in PHP server for local use.
+PHP **8.1+** with `pdo_sqlite`, `curl`, `mbstring`, and `zip` + `xml` (for XLSX import).
+`pdftotext` (poppler-utils) for PDF import. A web server for the OAuth redirect, or the
+built-in PHP server for local use.
 
 ## Quick start (local)
 

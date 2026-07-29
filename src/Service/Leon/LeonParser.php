@@ -50,11 +50,37 @@ final class LeonParser
         'Flight count'  => 'flights_count',
     ];
 
-    /** Dispatch by extension. */
+    /** Dispatch by extension: csv/tsv, xlsx, or pdf. */
     public static function parse(string $absPath): array
     {
         $ext = strtolower(pathinfo($absPath, PATHINFO_EXTENSION));
-        return $ext === 'pdf' ? self::parsePdf($absPath) : self::parseCsv($absPath);
+        return match ($ext) {
+            'pdf'          => self::parsePdf($absPath),
+            'xlsx', 'xlsm' => self::parseXlsx($absPath),
+            default        => self::parseCsv($absPath),
+        };
+    }
+
+    /** @return array{trips: array, headers: array, skipped: int, source: string} */
+    public static function parseXlsx(string $absPath): array
+    {
+        if (!is_file($absPath)) throw new \RuntimeException("LEON file not found: {$absPath}");
+        $rows = XlsxReader::rows($absPath);
+
+        $headerCells = null;
+        $dataRows = [];
+        foreach ($rows as $row) {
+            if (count(array_filter($row, fn($c) => trim((string)$c) !== '')) === 0) continue; // blank row
+            if ($headerCells === null) {
+                if (self::looksLikeHeader($row)) $headerCells = $row;
+                continue;
+            }
+            $dataRows[] = $row;
+        }
+        if ($headerCells === null) {
+            throw new \RuntimeException('No LEON header row found in the spreadsheet (expected a "Trip number" column).');
+        }
+        return self::finalize($headerCells, $dataRows, 'xlsx');
     }
 
     /** @return array{trips: array, headers: array, skipped: int, source: string} */

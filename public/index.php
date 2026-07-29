@@ -26,6 +26,19 @@ function base(): string { return rtrim((string)parse_url((string)cfg('app.base_u
 function csrf_token(): string { if (empty($_SESSION['csrf'])) $_SESSION['csrf'] = bin2hex(random_bytes(16)); return $_SESSION['csrf']; }
 function csrf_check(): void { if (!hash_equals($_SESSION['csrf'] ?? '', $_POST['csrf'] ?? '')) { http_response_code(419); exit('Bad CSRF token.'); } }
 function is_authed(): bool { return !empty($_SESSION['authed']); }
+/** Flatten PHP's $_FILES structure (single or multiple) into a list of file rows. */
+function normalize_files($f): array {
+    if (!$f || !isset($f['name'])) return [];
+    if (is_array($f['name'])) {
+        $out = [];
+        foreach ($f['name'] as $i => $n) {
+            if ((string)$n === '') continue;
+            $out[] = ['name' => $n, 'tmp_name' => $f['tmp_name'][$i] ?? '', 'error' => $f['error'][$i] ?? UPLOAD_ERR_NO_FILE, 'size' => $f['size'][$i] ?? 0];
+        }
+        return $out;
+    }
+    return (string)$f['name'] === '' ? [] : [$f];
+}
 
 // --- auth -----------------------------------------------------------
 if ($path === '/login' && $method === 'POST') {
@@ -71,20 +84,37 @@ if ($path === '/xero/disconnect' && $method === 'POST') {
     csrf_check(); XeroOAuth::disconnect(); $_SESSION['flash_ok'] = 'Disconnected from Xero.'; redirect('/');
 }
 
-// --- import a LEON export into the master list -----------------------
+// --- import one or more LEON exports into the master list -----------
 if ($path === '/import' && $method === 'POST') {
     csrf_check();
-    $entity = strtolower($_POST['entity'] ?? 'inc') === 'ltd' ? 'ltd' : 'inc';
-    if (empty($_FILES['leon']['tmp_name']) || !is_uploaded_file($_FILES['leon']['tmp_name'])) {
-        $_SESSION['flash_err'] = 'Choose a LEON CSV or PDF to import.'; redirect('/');
-    }
+    $entitySel = strtolower($_POST['entity'] ?? 'auto');
+    $files = normalize_files($_FILES['leon'] ?? null);
+    if (!$files) { $_SESSION['flash_err'] = 'Choose one or more LEON files (CSV, XLSX or PDF).'; redirect('/'); }
+
     $dir = STORAGE_ROOT . '/uploads'; @mkdir($dir, 0770, true);
-    $dest = $dir . '/' . date('Ymd_His') . '_' . preg_replace('/[^A-Za-z0-9._-]+/', '_', basename($_FILES['leon']['name']));
-    move_uploaded_file($_FILES['leon']['tmp_name'], $dest);
-    try {
-        $imp = LeonProcessor::import($dest, $entity)['summary'];
-        $_SESSION['flash_ok'] = "Imported {$imp['parsed']} trips from " . strtoupper($imp['source']) . " ({$imp['new']} new, {$imp['updated']} updated). Select trips below and create draft POs.";
-    } catch (\Throwable $e) { $_SESSION['flash_err'] = 'Import failed: ' . $e->getMessage(); }
+    $tot = ['files' => 0, 'parsed' => 0, 'new' => 0, 'updated' => 0];
+    $errs = [];
+    foreach ($files as $f) {
+        if (($f['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK || !is_uploaded_file($f['tmp_name'])) continue;
+        $name = basename((string)$f['name']);
+        // Entity per file: explicit choice, else auto-detect from the filename.
+        $entity = in_array($entitySel, ['inc', 'ltd'], true)
+            ? $entitySel
+            : (stripos($name, 'ltd') !== false ? 'ltd' : 'inc');
+        $dest = $dir . '/' . date('Ymd_His') . '_' . bin2hex(random_bytes(3)) . '_' . preg_replace('/[^A-Za-z0-9._-]+/', '_', $name);
+        move_uploaded_file($f['tmp_name'], $dest);
+        try {
+            $imp = LeonProcessor::import($dest, $entity)['summary'];
+            $tot['files']++; $tot['parsed'] += $imp['parsed']; $tot['new'] += $imp['new']; $tot['updated'] += $imp['updated'];
+        } catch (\Throwable $e) {
+            $errs[] = $name . ': ' . $e->getMessage();
+        }
+    }
+    if ($tot['files']) {
+        $_SESSION['flash_ok'] = "Imported {$tot['files']} file(s) · {$tot['parsed']} trips ({$tot['new']} new, {$tot['updated']} updated). Select trips below and create draft POs.";
+    }
+    if ($errs)                       $_SESSION['flash_err'] = implode(' · ', $errs);
+    if (!$tot['files'] && !$errs)    $_SESSION['flash_err'] = 'No valid files were uploaded.';
     redirect('/');
 }
 
@@ -202,12 +232,27 @@ function render_home(?array $result): void {
 
     <!-- Import -->
     <section class="card">
-      <div class="chead"><h2>Import LEON export</h2><span class="muted">CSV or PDF · Flight Count report</span></div>
-      <form method="post" action="<?= e(base()) ?>/import" enctype="multipart/form-data" class="importform">
+      <div class="chead"><h2>Import LEON export</h2><span class="muted">Flight Count report · CSV, XLSX or PDF · multiple files</span></div>
+      <form method="post" action="<?= e(base()) ?>/import" enctype="multipart/form-data" class="importform" id="importForm">
         <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>">
-        <div class="field grow"><label>File</label><input type="file" name="leon" accept=".csv,.pdf,text/csv,application/pdf" required></div>
-        <div class="field"><label>Entity</label><select name="entity"><option value="inc">Signum Aviation Inc</option><option value="ltd">Signum Aviation Ltd</option></select></div>
-        <div class="field"><label>&nbsp;</label><button class="btn primary">Import</button></div>
+        <label class="dropzone" id="dz">
+          <input type="file" id="leonInput" name="leon[]" class="sronly" multiple
+                 accept=".csv,.xlsx,.pdf,text/csv,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
+          <div class="dzinner">
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 9 12 4 17 9"/><line x1="12" y1="4" x2="12" y2="16"/></svg>
+            <div class="dztext"><b>Choose files</b> or drag &amp; drop</div>
+            <div class="muted small">LEON Flight Count · CSV, XLSX or PDF · multiple files allowed</div>
+          </div>
+          <ul class="filelist" id="fileList"></ul>
+        </label>
+        <div class="importrow">
+          <div class="field"><label>Entity</label><select name="entity">
+            <option value="auto">Auto-detect (by filename)</option>
+            <option value="inc">Signum Aviation Inc</option>
+            <option value="ltd">Signum Aviation Ltd</option>
+          </select></div>
+          <button class="btn primary" type="submit">Import</button>
+        </div>
       </form>
     </section>
 
@@ -281,7 +326,32 @@ function render_home(?array $result): void {
       const BASE  = <?= json_encode(base()) ?>;
     </script>
     <script><?= app_js() ?></script>
+    <script><?= dz_js() ?></script>
     </body></html><?php
+}
+
+function dz_js(): string {
+    return <<<'JS'
+(function(){
+  const dz=document.getElementById('dz'), inp=document.getElementById('leonInput'),
+        list=document.getElementById('fileList'), form=document.getElementById('importForm');
+  if(!dz||!inp) return;
+  const fmt=b=> b>=1048576 ? (b/1048576).toFixed(1)+' MB' : Math.max(1,Math.round(b/1024))+' KB';
+  const kind=n=> /\.pdf$/i.test(n)?'PDF' : /\.xlsm?$/i.test(n)||/\.xlsx$/i.test(n)?'XLSX' : 'CSV';
+  const esc=s=>String(s).replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+  function render(){
+    const fs=[...inp.files];
+    list.innerHTML=fs.map(f=>`<li class="filechip"><span class="fx ${kind(f.name).toLowerCase()}">${kind(f.name)}</span><span class="fn">${esc(f.name)}</span><em>${fmt(f.size)}</em></li>`).join('');
+    dz.classList.toggle('has', fs.length>0);
+  }
+  inp.addEventListener('change', render);
+  ['dragenter','dragover'].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();e.stopPropagation();dz.classList.add('drag');}));
+  ['dragleave','dragend'].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.remove('drag');}));
+  dz.addEventListener('drop',e=>{e.preventDefault();e.stopPropagation();dz.classList.remove('drag');
+    if(e.dataTransfer&&e.dataTransfer.files.length){ inp.files=e.dataTransfer.files; render(); }});
+  form.addEventListener('submit',e=>{ if(inp.files.length===0){ e.preventDefault(); alert('Choose at least one LEON file first.'); }});
+})();
+JS;
 }
 
 function render_result(array $result): void {
@@ -480,10 +550,27 @@ input[type=checkbox]{width:auto}
 .btn.sm{padding:6px 11px;font-size:13px}
 .btn.block{width:100%;justify-content:center;margin-top:6px}
 
-.importform,.settings{display:flex;gap:12px;flex-wrap:wrap;align-items:end}
-.settings{gap:12px}
+.settings{display:flex;gap:12px;flex-wrap:wrap;align-items:end}
 .field{flex:0 0 auto;min-width:150px}.field.grow{flex:1 1 240px}
-.importform .field.grow{flex:1 1 320px}
+.small{font-size:12px}
+
+/* import dropzone */
+.importform{display:flex;flex-direction:column;gap:14px}
+.sronly{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);border:0}
+.dropzone{display:block;border:1.5px dashed #c7cde0;border-radius:12px;background:#fafbff;padding:20px;cursor:pointer;transition:border-color .15s,background .15s}
+.dropzone:hover{border-color:var(--accent);background:#f5f8ff}
+.dropzone.drag{border-color:var(--accent);background:#eef4ff;border-style:solid}
+.dropzone.has{border-style:solid;border-color:#d5d9e4;background:#fff}
+.dzinner{display:flex;flex-direction:column;align-items:center;gap:5px;text-align:center;pointer-events:none}
+.dztext{font-size:14px}.dztext b{color:var(--accent)}
+.filelist{list-style:none;margin:14px 0 0;padding:0;display:flex;flex-direction:column;gap:6px}
+.filechip{display:flex;align-items:center;gap:10px;background:#f7f8fc;border:1px solid var(--line);border-radius:9px;padding:7px 11px;font-size:13px}
+.filechip .fn{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.filechip em{color:var(--mut);font-style:normal;font-size:12px}
+.fx{font-size:10.5px;font-weight:700;letter-spacing:.4px;padding:2px 7px;border-radius:6px;color:#fff;flex:none}
+.fx.csv{background:#16a34a}.fx.xlsx{background:#0f766e}.fx.pdf{background:#dc2626}
+.importrow{display:flex;gap:12px;align-items:end}
+.importrow .field{min-width:220px}
 
 .toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
 .search{flex:1 1 240px;min-width:180px}

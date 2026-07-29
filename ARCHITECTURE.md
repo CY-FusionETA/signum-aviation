@@ -58,7 +58,8 @@ PO before booking the bill.
 ### LEON pipeline (`src/Service/Leon/`)
 | File | Role |
 |---|---|
-| `LeonParser.php` | Header-driven parse of the Flight Count export. CSV via `fgetcsv`; PDF via `pdftotext -layout` sliced at the header labels' character offsets. Handles Inc/Ltd column orders, preamble + `∑` row, blank clients, alpha/slash trip numbers, dd-mm-yyyy dates. |
+| `LeonParser.php` | Header-driven parse of the Flight Count export. CSV via `fgetcsv`; XLSX via `XlsxReader`; PDF via `pdftotext -layout` sliced at the header labels' character offsets. All three feed one canonical mapping. Handles Inc/Ltd column orders, preamble + `∑` row, blank clients, alpha/slash trip numbers, dd-mm-yyyy dates. |
+| `XlsxReader.php` | Dependency-free `.xlsx` reader (zip + DOM): shared/inline strings, and Excel date serials → `Y-m-d`. Returns rows of cells for `LeonParser`. |
 | `LeonProcessor.php` | Orchestration: `import()` builds the master list; `createPosForIds()` creates one DRAFT PO per selected trip (idempotent per tenant); `process()` = both, for the CLI. |
 
 ### Persistence (`src/Repo/`)

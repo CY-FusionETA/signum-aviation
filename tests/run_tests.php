@@ -57,6 +57,25 @@ foreach (['inc', 'ltd'] as $ent) {
     check("$ent: PDF fields identical to CSV", $diffs, 0);
 }
 
+// --- 2b. XLSX parser matches CSV field-for-field (incl date serials) -
+foreach (['inc', 'ltd'] as $ent) {
+    if (!is_file("$FX/flight_count_{$ent}.xlsx")) { check("$ent: xlsx fixture present", false, true); continue; }
+    $csv = LeonParser::parse("$FX/flight_count_{$ent}.csv");
+    $xls = LeonParser::parse("$FX/flight_count_{$ent}.xlsx");
+    check("$ent: XLSX source flag", $xls['source'], 'xlsx');
+    check("$ent: XLSX trip count == CSV", count($xls['trips']), count($csv['trips']));
+    $cm = []; foreach ($csv['trips'] as $t) $cm[$t['trip_number']] = $t;
+    $diffs = 0;
+    foreach ($xls['trips'] as $pt) {
+        $ct = $cm[$pt['trip_number']] ?? null;
+        if (!$ct) { $diffs++; continue; }
+        foreach (['client_name','aircraft','route','start_date','end_date','flights_count'] as $f) {
+            if ((string)$ct[$f] !== (string)$pt[$f]) $diffs++;
+        }
+    }
+    check("$ent: XLSX fields identical to CSV", $diffs, 0);
+}
+
 // --- 3. PO payload shape (trip-metadata-only, DRAFT, desc-only line) -
 $payload = XeroApiClient::buildOrderPayload($byTrip['35518']);
 check('PO status DRAFT', $payload['Status'], 'DRAFT');
