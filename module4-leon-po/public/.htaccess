@@ -1,0 +1,8 @@
+# Point the vhost DocumentRoot at this public/ directory.
+# Everything that isn't a real file routes to index.php (front controller).
+RewriteEngine On
+# If hosted under a subpath (e.g. /web/signum-leon/), set RewriteBase to match:
+# RewriteBase /web/signum-leon/
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^ index.php [QSA,L]

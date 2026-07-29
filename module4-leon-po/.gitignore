@@ -1,0 +1,9 @@
+/config/config.php
+/storage/*.sqlite
+/storage/*.sqlite-wal
+/storage/*.sqlite-shm
+/storage/one_trip.csv
+/storage/uploads/
+/storage/logs/
+/vendor/
+.DS_Store
