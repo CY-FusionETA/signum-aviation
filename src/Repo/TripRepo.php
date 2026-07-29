@@ -70,6 +70,25 @@ final class TripRepo
         return Db::all("SELECT * FROM leon_trips ORDER BY start_date DESC, trip_number DESC");
     }
 
+    /**
+     * Remove trips from the master list by id. Local only — a draft PO already
+     * created in Xero is NOT deleted (void it in Xero if you want it gone).
+     * Returns the number of rows removed.
+     */
+    public static function deleteIds(array $ids): int
+    {
+        $ids = array_values(array_filter(array_map('intval', $ids)));
+        if (!$ids) return 0;
+        $ph = implode(',', array_fill(0, count($ids), '?'));
+        return Db::q("DELETE FROM leon_trips WHERE id IN ({$ph})", $ids)->rowCount();
+    }
+
+    /** Empty the whole master list. Returns the number of rows removed. */
+    public static function deleteAll(): int
+    {
+        return Db::q("DELETE FROM leon_trips")->rowCount();
+    }
+
     /** Does this trip already have a PO in the given (current) tenant? */
     public static function hasPoInTenant(array $trip, string $tenantId): bool
     {

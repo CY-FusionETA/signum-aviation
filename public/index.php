@@ -118,6 +118,24 @@ if ($path === '/import' && $method === 'POST') {
     redirect('/');
 }
 
+// --- delete trips from the master list ------------------------------
+// Local only: removes the row(s) here. A draft PO already created in Xero is
+// left alone (void it in Xero if you want it gone); re-importing the LEON file
+// brings the trip back as a fresh row with no PO link.
+if ($path === '/trips/delete' && $method === 'POST') {
+    csrf_check();
+    if (!empty($_POST['all'])) {
+        $n = TripRepo::deleteAll();
+        $_SESSION['flash_ok'] = "Cleared the master list — {$n} trip(s) removed.";
+        redirect('/');
+    }
+    $ids = array_map('intval', (array)($_POST['trip_ids'] ?? []));
+    if (!$ids) { $_SESSION['flash_err'] = 'Tick at least one trip to delete.'; redirect('/'); }
+    $n = TripRepo::deleteIds($ids);
+    $_SESSION['flash_ok'] = $n === 1 ? '1 trip removed from the master list.' : "{$n} trips removed from the master list.";
+    redirect('/');
+}
+
 // --- create draft POs for selected trips ----------------------------
 $result = null;
 if ($path === '/create-pos' && $method === 'POST') {
@@ -273,6 +291,7 @@ function render_home(?array $result): void {
           <select id="fStatus" class="fsel"><option value="">All statuses</option><option value="new">No PO yet</option><option value="created">PO created</option><option value="other">PO in other org</option></select>
           <span class="spacer"></span>
           <label class="chk"><input type="checkbox" name="dry_run" <?= $connected ? '' : 'checked disabled' ?>> Dry run</label>
+          <button class="btn danger" type="submit" id="delsel" formaction="<?= e(base()) ?>/trips/delete" formnovalidate>Delete selected</button>
           <button class="btn primary" type="submit"><span id="selcount">0</span> selected · Create draft POs</button>
         </div>
         <div class="tablewrap">
@@ -287,6 +306,7 @@ function render_home(?array $result): void {
             <th data-key="start" class="sortable">Dates</th>
             <th data-key="flights" class="sortable num">Flts</th>
             <th data-key="status" class="sortable">PO status</th>
+            <th class="actcol"></th>
           </tr></thead>
           <tbody id="rows"></tbody>
         </table>
@@ -324,6 +344,7 @@ function render_home(?array $result): void {
     <script>
       const TRIPS = <?= json_encode($js, JSON_UNESCAPED_UNICODE) ?>;
       const BASE  = <?= json_encode(base()) ?>;
+      const CSRF  = <?= json_encode(csrf_token()) ?>;
     </script>
     <script><?= app_js() ?></script>
     <script><?= dz_js() ?></script>
@@ -419,6 +440,9 @@ const rowsEl = $('#rows'); if (!rowsEl) { /* empty list */ } else {
         <td class="nowrap">${esc(dates(t))}</td>
         <td class="num">${t.flights===''?'':t.flights}</td>
         <td><span class="pill ${c}">${esc(l)}</span>${err}</td>
+        <td class="actcol"><button type="button" class="del" title="Delete this trip from the master list" aria-label="Delete trip ${esc(t.trip)}">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+        </button></td>
       </tr>`;
     }).join('');
     $('#count').textContent = `${list.length} of ${TRIPS.length} trips`;
@@ -431,13 +455,25 @@ const rowsEl = $('#rows'); if (!rowsEl) { /* empty list */ } else {
 
   // hidden inputs for every selected id at submit (survives filtering)
   $('#poform').addEventListener('submit', e => {
+    const isDelete = e.submitter && e.submitter.id === 'delsel';
     $('#poform').querySelectorAll('input[data-sel]').forEach(n=>n.remove());
     selected.forEach(id => {
       const i=document.createElement('input'); i.type='hidden'; i.name='trip_ids[]'; i.value=id; i.dataset.sel='1';
       $('#poform').appendChild(i);
     });
-    if (selected.size===0){ e.preventDefault(); alert('Tick at least one trip first.'); }
+    if (selected.size===0){ e.preventDefault(); alert(isDelete ? 'Tick at least one trip to delete.' : 'Tick at least one trip first.'); return; }
+    if (isDelete && !confirm(`Delete ${selected.size} trip(s) from the master list?\n\nThis only removes them here — any draft PO already created in Xero stays.`)) e.preventDefault();
   });
+
+  // delete a single trip (row button / modal) — posts its own form, outside #poform
+  function deleteTrip(id){
+    const t = TRIPS.find(x=>x.id===id); if(!t) return;
+    const extra = t.has ? `\n\nIts draft PO ${t.po_number||t.po_id} stays in Xero — void it there if you want it gone.` : '';
+    if (!confirm(`Delete trip ${t.trip} (${t.client||'no client'}) from the master list?${extra}`)) return;
+    const f=document.createElement('form'); f.method='post'; f.action=BASE+'/trips/delete';
+    f.innerHTML = `<input type="hidden" name="csrf" value="${esc(CSRF)}"><input type="hidden" name="trip_ids[]" value="${id}">`;
+    document.body.appendChild(f); f.submit();
+  }
 
   rowsEl.addEventListener('change', e => {
     if (!e.target.classList.contains('pick')) return;
@@ -448,6 +484,7 @@ const rowsEl = $('#rows'); if (!rowsEl) { /* empty list */ } else {
   rowsEl.addEventListener('click', e => {
     if (e.target.classList.contains('pick')) return;
     const tr = e.target.closest('tr'); if (!tr) return;
+    if (e.target.closest('.del')) { deleteTrip(+tr.dataset.id); return; }
     openModal(+tr.dataset.id);
   });
   $('#all').addEventListener('change', e => {
@@ -479,7 +516,9 @@ const rowsEl = $('#rows'); if (!rowsEl) { /* empty list */ } else {
       `<div class="drow"><span>PO status</span><b>${po}</b></div>` +
       row('PO number', t.po_number) + row('Xero PO ID', t.po_id) +
       row('Synced at', t.synced) + (t.error?`<div class="drow err"><span>Last error</span><b>${esc(t.error)}</b></div>`:'') +
-      row('Source file', t.source) + row('Imported', t.created) + row('Updated', t.updated);
+      row('Source file', t.source) + row('Imported', t.created) + row('Updated', t.updated) +
+      `<div class="mfoot"><button type="button" class="btn danger sm" id="mdel">Delete from master list</button></div>`;
+    $('#mdel').addEventListener('click', () => { $('#modal').hidden = true; deleteTrip(t.id); });
     $('#modal').hidden = false;
   }
   document.querySelectorAll('[data-close]').forEach(x=>x.addEventListener('click',()=>$('#modal').hidden=true));
@@ -548,6 +587,8 @@ input[type=checkbox]{width:auto}
 .btn.primary:hover{background:var(--accent-d)}
 .btn.ghost{background:#fff}
 .btn.sm{padding:6px 11px;font-size:13px}
+.btn.danger{border-color:#f3c2c2;color:var(--red)}
+.btn.danger:hover{background:#fef2f2;border-color:var(--red)}
 .btn.block{width:100%;justify-content:center;margin-top:6px}
 
 .settings{display:flex;gap:12px;flex-wrap:wrap;align-items:end}
@@ -599,6 +640,10 @@ td.nowrap{white-space:nowrap;color:var(--mut)}
 .pill.gray{background:#f2f4f7;color:#475467;border-color:#e4e7ec}
 .tagpill{display:inline-block;font-size:11px;font-weight:600;color:#3538cd;background:#eef2ff;border-radius:6px;padding:1px 7px}
 .warnmark{color:var(--red);font-weight:700;cursor:help}
+th.actcol,td.actcol{width:38px;padding-left:0;padding-right:8px;text-align:right}
+.del{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;padding:0;background:transparent;border:1px solid transparent;border-radius:7px;color:var(--gray);cursor:pointer}
+.del:hover{color:var(--red);background:#fef2f2;border-color:#f3c2c2}
+.mfoot{display:flex;justify-content:flex-end;margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
 
 .reschips{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
 .chip{font-size:12px;padding:3px 10px;border-radius:20px;background:#f2f4f7;color:#475467}
