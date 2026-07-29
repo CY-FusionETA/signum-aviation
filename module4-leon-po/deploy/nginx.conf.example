@@ -1,0 +1,37 @@
+# Skyledger — nginx + PHP-FPM vhost (DigitalOcean droplet).
+#
+# The web root is the app's public/ directory ONLY. config/, src/, db/, storage/
+# live ONE LEVEL ABOVE the web root, so they are never reachable over HTTP — no
+# per-file denies needed. Everything that isn't a real file routes to index.php.
+#
+# 1) Edit server_name + the root path + the fastcgi_pass socket for your PHP.
+# 2) Put this in /etc/nginx/sites-available/skyledger and symlink into sites-enabled.
+# 3) Get HTTPS with certbot (see deploy/DEPLOY.md) — Xero OAuth requires https.
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name skyledger.example.com;               # <-- your domain
+
+    # Path to the repo's module4-leon-po/public directory:
+    root /var/www/signum-aviation/module4-leon-po/public;
+    index index.php;
+
+    client_max_body_size 12m;                         # LEON PDF/CSV uploads
+
+    # Front controller: serve real files, else hand to index.php.
+    location / {
+        try_files $uri $uri/ /index.php$is_args$args;
+    }
+
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/run/php/php8.3-fpm.sock;   # <-- match your PHP-FPM version
+    }
+
+    # Never serve dotfiles (defence in depth; sensitive dirs are already above root).
+    location ~ /\.(?!well-known) { deny all; }
+
+    access_log /var/log/nginx/skyledger.access.log;
+    error_log  /var/log/nginx/skyledger.error.log;
+}
