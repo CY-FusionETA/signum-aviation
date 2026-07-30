@@ -49,8 +49,7 @@ final class InvoiceBuilder
         foreach ($bills as $b) {
             $amt = round((float)$b['total'] * $markup, 2);
             $subtotal += $amt;
-            $desc = trim((string)($b['description'] ?? '')) ?: ('Recharge — ' . (string)($b['supplier'] ?? 'supplier'));
-            $lines[] = $line($desc, $amt);
+            $lines[] = $line(self::lineDescription($b), $amt);
         }
         $subtotal = round($subtotal, 2);
 
@@ -63,6 +62,31 @@ final class InvoiceBuilder
             'lines' => $lines, 'subtotal' => $subtotal, 'admin' => $admin,
             'support' => $support, 'total' => round($subtotal + $admin + $support, 2),
         ];
+    }
+
+    /**
+     * A concise, client-facing recharge line for one supplier bill: the service
+     * station, date and tail — NOT the supplier's name or their itemised charges
+     * (that's the cost behind the markup, which the client shouldn't see). Falls
+     * back to a generic label if the airport/date weren't extracted.
+     *   "Ground handling & services at VHHH on 26/03/2026 (MAL191)"
+     */
+    private static function lineDescription(array $b): string
+    {
+        $airport = strtoupper(trim((string)($b['ex_airport'] ?? '')));
+        $tail    = strtoupper(trim((string)($b['ex_tail'] ?? '')));
+        $date    = self::displayDate((string)($b['ex_date'] ?? ''));
+
+        $desc = $airport !== '' ? "Ground handling & services at {$airport}" : 'Ground handling & associated services';
+        if ($date !== '') $desc .= " on {$date}";
+        if ($tail !== '') $desc .= " ({$tail})";
+        return $desc;
+    }
+
+    /** ISO yyyy-mm-dd → dd/mm/yyyy; anything else passes through unchanged. */
+    private static function displayDate(string $iso): string
+    {
+        return preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', trim($iso), $m) ? "{$m[3]}/{$m[2]}/{$m[1]}" : trim($iso);
     }
 
     private static function empty(string $reason): array

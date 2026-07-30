@@ -180,7 +180,7 @@ check('refresh without Xero → ok=false', $rr['ok'], false);
 // --- 9. Module 5: build a client invoice from tagged bills ----------
 $IB = '\App\Service\Invoices\InvoiceBuilder';
 $ib_bills = [
-    ['total'=>100,'currency'=>'USD','description'=>'Ground Handling at VHHH on 30/03/2026 for MAL191','supplier'=>'ASA'],
+    ['total'=>100,'currency'=>'USD','description'=>'Ground Handling at VHHH on 30/03/2026 for MAL191','supplier'=>'ASA','ex_airport'=>'VHHH','ex_date'=>'2026-03-30','ex_tail'=>'MAL191'],
     ['total'=>50, 'currency'=>'USD','description'=>'Landing','supplier'=>'X'],
 ];
 $bd = $IB::build($ib_bills, ['markup'=>1.02,'admin_pct'=>11,'support_fee'=>0,'account_code'=>'']);
@@ -190,6 +190,11 @@ check('recharge subtotal (×1.02)', number_format($bd['subtotal'],2), '153.00');
 check('admin 11%', number_format($bd['admin'],2), '16.83');
 check('invoice total', number_format($bd['total'],2), '169.83');
 check('lines = 2 recharge + admin', count($bd['lines']), 3);
+// Client-facing line is a concise summary (station/date/tail), NOT the raw bill blob.
+check('recharge line summarised, not raw desc', $bd['lines'][0]['Description'], 'Ground handling & services at VHHH on 30/03/2026 (MAL191)');
+check('  → wrong: does not carry the bill blob', strpos((string)$bd['lines'][0]['Description'], 'Ground Handling at VHHH on 30/03/2026 for MAL191'), false);
+check('  → supplier name not leaked to client', strpos((string)$bd['lines'][0]['Description'], 'ASA'), false);
+check('no-extraction bill → generic label', $bd['lines'][1]['Description'], 'Ground handling & associated services');
 
 $bd2 = $IB::build($ib_bills, ['markup'=>1.0,'admin_pct'=>11,'support_fee'=>650,'account_code'=>'200']);
 check('support fee adds a line', count($bd2['lines']), 4);
