@@ -31,6 +31,15 @@ function is_authed(): bool { return !empty($_SESSION['authed']); }
 function admin_email(): string { return strtolower(trim((string)Settings::get('auth.email', cfg('app.admin_email', '')))); }
 function admin_hash(): string  { return (string)Settings::get('auth.password_hash', cfg('app.admin_password_hash', '')); }
 function admin_configured(): bool { return admin_email() !== '' && admin_hash() !== ''; }
+/** One-click admin sign-in on the login page. Bypasses the password — see /login/quick. */
+function quick_login_enabled(): bool { return (string)Settings::get('auth.quick_login', '0') === '1'; }
+/** Short display name for the quick-login button, e.g. "Simon" from simon@fusioneta.com. */
+function admin_label(): string {
+    $n = (string)Settings::get('auth.display_name', '');
+    if ($n !== '') return $n;
+    $local = explode('@', admin_email())[0] ?? '';
+    return $local === '' ? 'Admin' : ucfirst(preg_replace('/[._-].*$/', '', $local));
+}
 function admin_check(string $email, string $pass): bool {
     if (!admin_configured()) return false;
     return hash_equals(admin_email(), strtolower(trim($email))) && password_verify($pass, admin_hash());
@@ -56,6 +65,17 @@ if ($path === '/login' && $method === 'POST') {
         $_SESSION['authed'] = true; $_SESSION['email'] = admin_email(); redirect('/');
     }
     $_SESSION['flash_err'] = 'Wrong email or password.'; redirect('/login');
+}
+// One-click sign-in for the admin, for convenience on a trusted machine.
+// NOTE: while this is on, ANYONE who loads /login can click through and get in —
+// it is a deliberate bypass of the password. Turn it off with:
+//   php cli/quick-login.php off
+if ($path === '/login/quick' && $method === 'POST') {
+    csrf_check();
+    if (quick_login_enabled() && admin_configured()) {
+        $_SESSION['authed'] = true; $_SESSION['email'] = admin_email(); redirect('/');
+    }
+    $_SESSION['flash_err'] = 'Quick sign-in is disabled.'; redirect('/login');
 }
 if ($path === '/logout') { session_destroy(); redirect('/login'); }
 if ($path === '/login') { render_login(); exit; }
@@ -188,13 +208,31 @@ function render_login(): void {
       <p class="sub">Trips · supplier bills · billing status, in one place</p>
       <?php if (!admin_configured()): ?><div class="alert warn">No admin user set yet. On the server run <code>php cli/set-admin.php &lt;email&gt; &lt;password&gt;</code>.</div><?php endif; ?>
       <?php if ($err): ?><div class="alert err"><?= e($err) ?></div><?php endif; ?>
-      <form method="post" action="<?= e(base()) ?>/login">
+      <form method="post" action="<?= e(base()) ?>/login" id="loginForm">
         <label>Email</label>
-        <input type="email" name="email" autofocus autocomplete="username" placeholder="you@company.com">
+        <input type="email" name="email" id="f_email" autofocus autocomplete="username" placeholder="you@company.com">
         <label>Password</label>
-        <input type="password" name="password" autocomplete="current-password">
+        <input type="password" name="password" id="f_pass" autocomplete="current-password">
         <button class="btn primary block">Sign in</button>
       </form>
+      <?php if (quick_login_enabled() && admin_configured()): ?>
+        <div class="quickrow"><span>or</span></div>
+        <form method="post" action="<?= e(base()) ?>/login/quick" id="quickForm">
+          <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>">
+          <button class="btn block quick" type="submit" id="quickBtn">
+            <span class="av"><?= e(mb_substr(admin_label(), 0, 1)) ?></span>
+            Continue as <?= e(admin_label()) ?>
+          </button>
+        </form>
+        <script>
+          // Show the credentials as "filled in" for feedback, then sign in server-side.
+          // The real password is never sent to the browser.
+          document.getElementById('quickBtn').addEventListener('click', function () {
+            document.getElementById('f_email').value = <?= json_encode(admin_email()) ?>;
+            document.getElementById('f_pass').value  = '••••••••••••';
+          });
+        </script>
+      <?php endif; ?>
     </div></body></html><?php
 }
 
@@ -813,4 +851,8 @@ body.login{display:flex;align-items:center;justify-content:center;min-height:100
 .loginbox .brand{display:flex;align-items:center;gap:9px;font-weight:800;font-size:20px}
 .loginbox .sub{color:var(--mut);margin:6px 0 18px;font-size:13px}
 .loginbox label{margin-top:10px}
+.quickrow{display:flex;align-items:center;gap:10px;margin:16px 0 10px;color:var(--mut);font-size:12px}
+.quickrow:before,.quickrow:after{content:"";flex:1;height:1px;background:var(--line)}
+.btn.quick{gap:9px;font-weight:600}
+.btn.quick .av{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:var(--accent);color:#fff;font-size:11px;font-weight:700}
 </style><?php }
