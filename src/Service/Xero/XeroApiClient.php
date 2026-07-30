@@ -178,6 +178,11 @@ final class XeroApiClient implements XeroClientInterface
             $bills = [];
             foreach ($json['Invoices'] ?? [] as $inv) {
                 $descs = array_map(fn($l) => (string)($l['Description'] ?? ''), $inv['LineItems'] ?? []);
+                // The Invoices *list* endpoint omits line items — fetch the bill by
+                // ID to get the "…at VHHH…for MAL191" lines the matcher/legs need.
+                if (!array_filter($descs) && ($id = (string)($inv['InvoiceID'] ?? '')) !== '') {
+                    $descs = self::billLineDescriptions($auth, $id);
+                }
                 $bills[] = [
                     'invoice_id'     => (string)($inv['InvoiceID'] ?? ''),
                     'invoice_number' => (string)($inv['InvoiceNumber'] ?? ''),
@@ -193,6 +198,24 @@ final class XeroApiClient implements XeroClientInterface
         } catch (\Throwable $e) {
             return ['ok' => false, 'bills' => [], 'error' => $e->getMessage()];
         }
+    }
+
+    /**
+     * Line-item descriptions for a single bill. The list endpoint returns no line
+     * items, so we fetch the invoice by ID (which does). Returns [] on any error —
+     * a bill with no readable lines just stays in review, it never blocks the pull.
+     * @return string[]
+     */
+    private static function billLineDescriptions(array $auth, string $invoiceId): array
+    {
+        [$code, $body] = XeroOAuth::http('GET', self::API . 'Invoices/' . rawurlencode($invoiceId), [
+            'Authorization: Bearer ' . $auth['access_token'],
+            'Xero-tenant-id: ' . $auth['tenant_id'],
+            'Accept: application/json',
+        ]);
+        if ($code < 200 || $code >= 300) return [];
+        $lines = json_decode($body, true)['Invoices'][0]['LineItems'] ?? [];
+        return array_map(fn($l) => (string)($l['Description'] ?? ''), $lines);
     }
 
     /**
