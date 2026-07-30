@@ -74,3 +74,19 @@ or database.
   `storage/skyledger.sqlite*` (include the `-wal`/`-shm` sidecars).
 - If you host under a **subpath** instead of a subdomain, set `app.base_url` to the full
   subpath URL and point the nginx `location` accordingly.
+
+## Auto-refresh bills (Module 3, optional)
+
+Module 3's **Refresh from Xero** is a manual button by default. To pull + match
+new draft bills automatically, add a cron on the droplet (tokens are read from
+the DB and refreshed automatically — no browser needed):
+
+```bash
+mkdir -p storage/logs
+crontab -e
+# every 15 minutes: pull + match (review/tag stays manual in the UI)
+*/15 * * * * cd /var/www/signum-aviation && php cli/reconcile-bills.php >> storage/logs/reconcile.log 2>&1
+```
+
+Add `--tag` to also write the trip number onto every matched bill automatically
+(`php cli/reconcile-bills.php --tag`) — leave it off to keep tagging a human confirm.
