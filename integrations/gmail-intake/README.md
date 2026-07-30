@@ -1,51 +1,56 @@
-# Module 1 — Gmail supplier-invoice intake
+# Module 1 — Gmail supplier-invoice intake → WazzOCR
 
-A Google Apps Script that captures supplier-invoice emails and forwards each
-PDF/image attachment to a webhook over HTTPS — **no phone, no WhatsApp**. Email
-is its own front door into the OCR → bill pipeline; Wazzup/WhatsApp stays a
-separate (optional) door.
+A Google Apps Script that captures supplier-invoice emails and POSTs each
+PDF/image attachment **straight into WazzOCR's pipeline** over HTTPS — **no
+phone, no WhatsApp send**. WazzOCR OCRs the document and creates the draft Xero
+bill in the routed account's connected organisation.
 
 ```
-Gmail (filter → label)  →  Apps Script (this)  →  POST attachment  →  WazzOCR / Skyledger relay
-                                                                        → OCR/structure (Module 2)
-                                                                        → match LEON master list + create Xero bill (Module 3)
+Gmail (filter → label)  →  Apps Script (this)  →  POST /api/whatsapp/process-file  →  WazzOCR
+                                                                                        OCR (Gemini) + create draft Xero bill
 ```
 
-## Why not push it through Wazzup/WhatsApp?
-Wazzup is the *WhatsApp transport* (inbound message → webhook); WazzOCR is the
-*OCR brain*. The brain doesn't need WhatsApp. Sending email attachments back out
-through the Wazzup API just to trigger the WhatsApp webhook means hosting the
-file publicly, paying per message, and faking an inbound — the wrong tool. Email
-attachments should go straight to the processor over HTTP, which is what this does.
+## Why no phone is needed
+WazzOCR's `/api/whatsapp/process-file` endpoint has **no login gate**. It decides
+which account to process for from two fields in the POST body:
 
-## Setup
-1. **Gmail filter** — route supplier invoices to a label (default `supplier-invoices`):
-   Gmail → Settings → Filters → create a filter (e.g. `has:attachment` from your
-   handlers, or forwarded to a dedicated address) → "Apply label: supplier-invoices".
-2. **Apps Script** — go to script.google.com, new project bound to that Gmail
-   account, paste `Code.gs`, and fill in `CONFIG`:
-   - `INGEST_URL` — your WazzOCR POC intake URL (or a Skyledger relay endpoint).
-   - `INGEST_TOKEN` — a long random string the endpoint checks (`X-Ingest-Token`).
-3. Run **`setup`** once (grant permissions; creates the labels).
-4. Run **`installTrigger`** once (polls every 5 minutes).
-5. Test with **`run`** by hand and watch the execution log.
-
-## The webhook contract (what the endpoint receives)
-`multipart/form-data`, header `X-Ingest-Token: <token>`:
-
-| field | value |
+| field | meaning |
 |---|---|
-| `file` | the attachment (binary) |
-| `source` | `gmail` |
-| `message_id` | Gmail message id — use for idempotency downstream |
-| `from` / `subject` / `email_date` | email metadata |
-| `filename` | attachment filename |
+| `channelId` | the shared trial channel id (WazzOCR → Connections) |
+| `chatId` | a phone number listed under that account's **Allowed phone numbers** |
 
-Return any `2xx` for success. On non-2xx the script tags the thread
-`skyledger-error` and retries next run; on success it tags `skyledger-processed`
-so it's never sent twice.
+The phone is only a **routing key** — nothing is sent to WhatsApp. (Wazzup/WhatsApp
+is a *separate* intake door; email uses this HTTP door instead.)
 
-## Notes
-- Only forwards `pdf/png/jpg/jpeg/webp/tif` over 8 KB (skips signature/logo images).
-- Dedup is thread-label based (fine for the usual one-invoice-per-thread); the
-  `message_id` is forwarded so the downstream can also dedup exactly.
+## Prerequisites in WazzOCR (account "Signum Aviation")
+1. **Connections → connect the Signum Xero org.** Connect **exactly one** org, so
+   the AI never has to ask which org to bill (that would create a "pending/picker"
+   that normally needs a WhatsApp reply).
+2. **Connections → Allowed phone numbers → add a number** (a placeholder is fine,
+   e.g. `60000000018`). Use that same number as `ROUTING_PHONE`.
+3. Note the **trial channel id** → `CHANNEL_ID`.
+
+## Setup (Gmail side)
+1. **Gmail filter** → apply the label in `CONFIG.SOURCE_LABEL`
+   (`supplier-invoices`) to supplier-invoice emails.
+2. **script.google.com** → new project bound to that Gmail account → paste
+   `Code.gs` → fill `CONFIG` (`CHANNEL_ID`, `ROUTING_PHONE`).
+3. Run **`setup`** once (grant permissions, create labels).
+4. Run **`installTrigger`** once (polls every 5 minutes). Use **`run`** to test.
+
+## Behaviour
+- Forwards only `pdf/png/jpg/jpeg/webp/tif` over 8 KB (skips signature/logo images).
+- On success → tags the thread `skyledger-processed` (never sent twice).
+- On failure → tags `skyledger-error` and **doesn't** mark processed, so it
+  retries next run once fixed. A `status:"ignored"` response means `ROUTING_PHONE`
+  isn't in the account's Allowed phone numbers.
+
+## What this does and doesn't cover (Modules 2 & 3)
+WazzOCR handles **Module 2 (OCR)** and most of **Module 3 (create the Xero bill)**
+— supplier, amount, currency, COA account code, and the draft bill in Signum's Xero.
+
+What WazzOCR does **not** do is the Signum-specific **LEON/PO cross-reference** —
+matching the invoice to a trip in the Skyledger master list and assigning the cost
+to the client for recharge. That's a Skyledger enrichment step (see the main repo
+`ARCHITECTURE.md`) to be added on top; it isn't part of this email-intake script.
+For the POC, WazzOCR creating the draft supplier bill is the end of this path.
