@@ -1,7 +1,7 @@
-# Skyledger — Architecture
+# Signum Unidash — Architecture
 
 Plain **PHP 8 + SQLite**, no framework, no build step (Starship design). The repo root **is**
-the Skyledger app (Module 4: LEON → Xero PO), so a deployment serves it at the domain root
+the Signum Unidash app (Module 4: LEON → Xero PO), so a deployment serves it at the domain root
 with no extra path segment.
 
 ## Request flow (Module 4)

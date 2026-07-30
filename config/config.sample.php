@@ -9,9 +9,11 @@ return [
         'env'      => 'production',                 // 'local' shows real error messages
         'base_url' => 'http://localhost:8000',      // public URL, NO trailing slash
         'timezone' => 'Asia/Kuala_Lumpur',
-        // Light gate for the web UI (OAuth + processing must not be public).
-        // Generate: php -r "echo password_hash('your-password', PASSWORD_DEFAULT);"
-        'admin_password_hash' => '',                 // empty = UI refuses to run
+        // Admin login (email + password). Preferred: set these at runtime with
+        //   php cli/set-admin.php <email> <password>   (stored in app_settings).
+        // These config values are a fallback if app_settings has none.
+        'admin_email'         => '',                 // e.g. simon@fusioneta.com
+        'admin_password_hash' => '',                 // php -r "echo password_hash('pw', PASSWORD_DEFAULT);"
     ],
 
     'db' => [
