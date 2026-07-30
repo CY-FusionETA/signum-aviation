@@ -42,15 +42,33 @@ final class InvoiceService
             $trip = TripRepo::findById((int)$tripId);
             if (!$trip) continue;
             $out[] = [
-                'trip'    => $trip,
-                'bills'   => $bills,
-                'build'   => InvoiceBuilder::build($bills, $cfg),
-                'invoice' => InvoiceRepo::findByTrip($tenantId, (int)$tripId),
+                'trip'     => $trip,
+                'bills'    => $bills,
+                'build'    => InvoiceBuilder::build($bills, $cfg),
+                'complete' => CompletenessChecker::check($trip, $bills),
+                'invoice'  => InvoiceRepo::findByTrip($tenantId, (int)$tripId),
             ];
         }
         // Un-invoiced first, then by trip.
         usort($out, fn($a, $b) => ((int)!empty($a['invoice'])) <=> ((int)!empty($b['invoice'])));
         return $out;
+    }
+
+    /**
+     * Auto-create draft invoices for trips that are COMPLETE (every route leg has
+     * a tagged bill), buildable, and not yet invoiced. Half-costed trips are left
+     * for a human. @return array{created:int, skipped:int, incomplete:int}
+     */
+    public static function autoInvoiceComplete(string $tenantId): array
+    {
+        $created = 0; $skipped = 0; $incomplete = 0;
+        foreach (self::readyTrips($tenantId) as $r) {
+            if (!empty($r['invoice']))                 continue;                 // already invoiced
+            if (empty($r['build']['buildable']))       { $skipped++; continue; } // mixed currency
+            if (($r['complete']['status'] ?? '') !== 'complete') { $incomplete++; continue; }
+            self::createForTrip((int)$r['trip']['id'])['ok'] ? $created++ : $skipped++;
+        }
+        return ['created' => $created, 'skipped' => $skipped, 'incomplete' => $incomplete];
     }
 
     /** @return array{ok:bool, invoice_number?:string, error?:string} */

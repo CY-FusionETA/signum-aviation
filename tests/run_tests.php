@@ -210,6 +210,48 @@ check('ready-to-invoice includes the tagged trip', count($ready), 1);
 check('  → trip 99751', $ready[0]['trip']['trip_number'] ?? '', '99751');
 check('  → build is buildable', $ready[0]['build']['buildable'], true);
 
+// --- 10. Module 5: completeness gate (route legs vs tagged bills) ----
+$CC = '\App\Service\Invoices\CompletenessChecker';
+
+// Every route airport has a bill → complete.
+$cc1 = $CC::check(
+    ['route' => 'VHHH - RJTT - VHHH'],
+    [['ex_airport'=>'VHHH','description'=>'Handling at VHHH'],
+     ['ex_airport'=>'RJTT','description'=>'Handling at RJTT']]
+);
+check('all legs covered → complete', $cc1['status'], 'complete');
+check('  → distinct leg count (VHHH once)', $cc1['legs'], 2);
+check('  → nothing missing', $cc1['missing'], []);
+
+// One route airport with no bill → gaps, and it is named.
+$cc2 = $CC::check(
+    ['route' => 'VHHH - RJTT - RKSI'],
+    [['ex_airport'=>'VHHH','description'=>'Handling at VHHH']]
+);
+check('uncovered leg → gaps', $cc2['status'], 'gaps');
+check('  → missing legs named', $cc2['missing'], ['RJTT','RKSI']);
+check('  → covered legs named', $cc2['covered'], ['VHHH']);
+
+// Airport found via free-form description (not ex_airport) still counts.
+$cc3 = $CC::check(
+    ['route' => 'VHHH - RJTT'],
+    [['ex_airport'=>'','description'=>'Ground handling at Hong Kong VHHH and Tokyo RJTT']]
+);
+check('leg matched via description blob → complete', $cc3['status'], 'complete');
+
+// No route on the trip → unknown (can't gate).
+$cc4 = $CC::check(['route' => ''], [['ex_airport'=>'VHHH','description'=>'x']]);
+check('no route → unknown', $cc4['status'], 'unknown');
+check('  → zero legs', $cc4['legs'], 0);
+
+// ZZZZ placeholders are not real legs.
+$cc5 = $CC::check(['route' => 'VHHH - ZZZZ'], [['ex_airport'=>'VHHH','description'=>'x']]);
+check('ZZZZ placeholder ignored → complete on real legs', $cc5['status'], 'complete');
+check('  → ZZZZ not counted as a leg', $cc5['legs'], 1);
+
+// The DEMO trip 99751 (route VHHH) with its tagged VHHH bill → complete.
+check('readyTrips carries completeness', $ready[0]['complete']['status'] ?? '', 'complete');
+
 echo "\n" . str_repeat('=', 40) . "\n";
 printf("TOTAL: %d passed, %d failed\n", $pass, $fail);
 exit($fail === 0 ? 0 : 1);

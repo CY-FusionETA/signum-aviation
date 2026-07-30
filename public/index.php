@@ -548,13 +548,20 @@ function render_invoices(bool $connected, string $tenant, string $tenantId): voi
       <?php else: ?>
         <div class="tablewrap">
         <table class="grid"><thead><tr>
-          <th>Trip</th><th>Client</th><th class="num">Bills</th><th class="num">Recharge</th><th class="num">Admin</th><th class="num">Total</th><th>Status</th><th></th>
+          <th>Trip</th><th>Client</th><th class="num">Bills</th><th>Legs</th><th class="num">Recharge</th><th class="num">Admin</th><th class="num">Total</th><th>Status</th><th></th>
         </tr></thead><tbody>
-        <?php foreach ($ready as $r): $t=$r['trip']; $bd=$r['build']; $inv=$r['invoice']; ?>
+        <?php foreach ($ready as $r): $t=$r['trip']; $bd=$r['build']; $inv=$r['invoice']; $cp=$r['complete'];
+          $legs = $cp['status']==='complete'
+            ? '<span class="pill green" title="All legs have a bill">'.count($cp['covered']).'/'.(int)$cp['legs'].'</span>'
+            : ($cp['status']==='gaps'
+                ? '<span class="pill amber" title="Missing a bill at: '.e(implode(', ', $cp['missing'])).'">'.count($cp['covered']).'/'.(int)$cp['legs'].'</span>'
+                : '<span class="muted">—</span>');
+        ?>
           <tr>
             <td class="mono"><?= e($t['trip_number']) ?></td>
             <td><?= e($t['client_name'] ?: '—') ?></td>
             <td class="num"><?= count($r['bills']) ?></td>
+            <td class="nowrap"><?= $legs ?></td>
             <?php if ($inv): ?>
               <td class="num muted">—</td><td class="num muted">—</td>
               <td class="num"><b><?= $money($inv['currency'], $inv['total']) ?></b></td>
@@ -564,11 +571,14 @@ function render_invoices(bool $connected, string $tenant, string $tenantId): voi
               <td class="num"><?= $money($bd['currency'], $bd['subtotal']) ?></td>
               <td class="num"><?= $money($bd['currency'], $bd['admin']) ?></td>
               <td class="num"><b><?= $money($bd['currency'], $bd['total']) ?></b></td>
-              <td><span class="pill blue">Ready</span></td>
+              <td><?= $cp['status']==='complete' ? '<span class="pill blue">Ready</span>' : '<span class="pill amber" title="Missing: '.e(implode(', ', $cp['missing'])).'">Incomplete</span>' ?></td>
               <td class="nowrap">
-                <form method="post" action="<?= e(base()) ?>/invoices/create" onsubmit="return confirm('Create a draft <?= e($bd['currency']) ?> invoice to <?= e(addslashes($t['client_name'] ?: 'the client')) ?> for <?= $money($bd['currency'],$bd['total']) ?>?')">
+                <?php $conf = $cp['status']==='complete'
+                    ? 'Create a draft '.$bd['currency'].' invoice to '.addslashes($t['client_name'] ?: 'the client').' for '.($bd['currency'].' '.number_format((float)$bd['total'],2)).'?'
+                    : 'Trip is '.count($cp['covered']).'/'.$cp['legs'].' legs — no bill yet at '.addslashes(implode(', ', $cp['missing'])).'. Create the draft anyway?'; ?>
+                <form method="post" action="<?= e(base()) ?>/invoices/create" onsubmit="return confirm('<?= e($conf) ?>')">
                   <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>"><input type="hidden" name="trip_id" value="<?= (int)$t['id'] ?>">
-                  <button class="btn primary sm">Create draft invoice</button>
+                  <button class="btn <?= $cp['status']==='complete' ? 'primary' : 'ghost' ?> sm"><?= $cp['status']==='complete' ? 'Create draft invoice' : 'Create anyway' ?></button>
                 </form>
               </td>
             <?php else: ?>
