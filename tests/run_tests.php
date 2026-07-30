@@ -18,7 +18,18 @@ function check(string $label, $got, $want) {
         $ok ? '' : "  (got " . var_export($got, true) . ", want " . var_export($want, true) . ")");
 }
 
-foreach (glob(STORAGE_ROOT . '/skyledger.sqlite*') as $f) @unlink($f);
+// Tests run against a throwaway DB, NEVER the live one. Db::conn() is a lazy
+// singleton that reads cfg('db.path'), so redirecting it here — before the
+// first connection — keeps storage/skyledger.sqlite untouched even when the
+// suite is run from a deployed checkout.
+$TEST_DB = sys_get_temp_dir() . '/skyledger-test-' . getmypid() . '.sqlite';
+$dropTestDb = function () use ($TEST_DB) {
+    foreach (glob($TEST_DB . '*') as $f) @unlink($f);   // incl. -wal / -shm
+};
+$GLOBALS['config']['db']['path'] = $TEST_DB;
+$dropTestDb();
+register_shutdown_function($dropTestDb);
+
 Db::conn()->exec(file_get_contents(__DIR__ . '/../db/schema.sql'));
 $FX = __DIR__ . '/fixtures';
 
@@ -171,6 +182,17 @@ check('bill upsert stores client', $brow['matched_client'], 'Signum Malaysia S/B
 check('bill upsert status', $brow['match_status'], 'matched');
 $brow2 = \App\Repo\BillRepo::upsert('T1', ['invoice_id'=>'inv-1'], $b1);
 check('re-upsert same invoice: no duplicate', count(\App\Repo\BillRepo::allForTenant('T1')), 1);
+
+// A later re-match that finds nothing must keep the existing trip link —
+// otherwise the 15-min cron silently unlinks manual assigns and tagged bills.
+$noMatch = $M::match(['description'=>'Consulting fee'], $mtrips);
+$bkeep = \App\Repo\BillRepo::upsert('T1', ['invoice_id'=>'inv-1'], $noMatch);
+check('re-match with no trip keeps the link', $bkeep['matched_trip_number'], '99751');
+check('  → status not downgraded to review', $bkeep['match_status'], 'matched');
+\App\Repo\BillRepo::markTagged((int)$bkeep['id']);
+$btag = \App\Repo\BillRepo::upsert('T1', ['invoice_id'=>'inv-1'], $noMatch);
+check('tagged bill survives a no-trip re-match', $btag['match_status'], 'tagged');
+check('  → still in tagged() for invoicing', count(\App\Repo\BillRepo::tagged('T1')), 1);
 
 // reconcile without a Xero connection fails cleanly
 \App\Service\Xero\XeroOAuth::disconnect();

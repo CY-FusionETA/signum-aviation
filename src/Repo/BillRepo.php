@@ -28,6 +28,19 @@ final class BillRepo
         $trip = $match['trip'] ?? null;
         $status = $existing && ($existing['match_status'] ?? '') === 'tagged' ? 'tagged' : $match['status'];
 
+        // A re-match that finds no trip must not wipe a link we already have.
+        // The reconcile cron re-upserts every bill every 15 min, so blanking
+        // here would silently drop manually-assigned and tagged bills out of
+        // Module 5 (tagged() requires matched_trip_id IS NOT NULL).
+        if (!$trip && $existing && $existing['matched_trip_id'] !== null) {
+            $trip = [
+                'id'          => $existing['matched_trip_id'],
+                'trip_number' => $existing['matched_trip_number'],
+                'client_name' => $existing['matched_client'],
+            ];
+            if ($status !== 'tagged') $status = $existing['match_status'];
+        }
+
         $fields = [
             'tenant_id'           => $tenantId,
             'xero_invoice_id'     => (string)$bill['invoice_id'],
