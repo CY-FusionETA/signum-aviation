@@ -60,6 +60,16 @@ final class BillReconciler
         return ['ok' => false, 'error' => $err];
     }
 
+    /** Manually assign a review/ambiguous bill to a trip. @return array{ok:bool, error?:string} */
+    public static function assign(int $billId, int $tripId): array
+    {
+        if (!BillRepo::findById($billId)) return ['ok' => false, 'error' => 'Bill not found.'];
+        $trip = TripRepo::findById($tripId);
+        if (!$trip) return ['ok' => false, 'error' => 'Trip not found.'];
+        BillRepo::setMatch($billId, $trip);
+        return ['ok' => true];
+    }
+
     /** Tag every matched-but-untagged bill. @return array{tagged:int, failed:int} */
     public static function tagAllMatched(): array
     {

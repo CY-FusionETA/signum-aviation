@@ -196,6 +196,14 @@ if ($path === '/bills/tag' && $method === 'POST') {
         : 'Tag failed: ' . ($res['error'] ?? 'unknown');
     redirect('/?view=bills');
 }
+if ($path === '/bills/assign' && $method === 'POST') {
+    csrf_check();
+    $res = BillReconciler::assign((int)($_POST['id'] ?? 0), (int)($_POST['trip_id'] ?? 0));
+    $_SESSION[!empty($res['ok']) ? 'flash_ok' : 'flash_err'] = !empty($res['ok'])
+        ? 'Bill matched to the trip — you can tag it now.'
+        : 'Assign failed: ' . ($res['error'] ?? 'unknown');
+    redirect('/?view=bills');
+}
 if ($path === '/bills/tag-all' && $method === 'POST') {
     csrf_check();
     $r = BillReconciler::tagAllMatched();
@@ -535,6 +543,7 @@ function render_settings(bool $connected, string $tenant): void {
 
 function render_bills(bool $connected, string $tenant, string $tenantId): void {
     $bills = $connected ? BillRepo::allForTenant($tenantId) : [];
+    $allTrips = TripRepo::all();
     $c = ['pulled'=>count($bills),'matched'=>0,'tagged'=>0,'ambiguous'=>0,'review'=>0];
     foreach ($bills as $b) { $s=(string)$b['match_status']; if(isset($c[$s]))$c[$s]++; }
     $bpill = function(string $s): string {
@@ -586,7 +595,7 @@ function render_bills(bool $connected, string $tenant, string $tenantId): void {
             $ex = trim(implode(' · ', array_filter([$b['ex_tail'], $b['ex_airport'], $b['ex_date']])));
         ?>
           <tr>
-            <td><?= e($b['supplier'] ?: '—') ?></td>
+            <td><?= e($b['supplier'] ?: '—') ?><?php if ($b['description']): ?><div class="billdesc" title="<?= e($b['description']) ?>"><?= e(mb_strimwidth((string)$b['description'], 0, 64, '…')) ?></div><?php endif; ?></td>
             <td class="mono" title="<?= e($b['description']) ?>"><?= e($b['invoice_number'] ?: substr((string)$b['xero_invoice_id'],0,8)) ?></td>
             <td class="nowrap"><?= e($b['bill_date']) ?></td>
             <td class="num"><?= $b['total']!==null ? e($b['currency'].' '.number_format((float)$b['total'],2)) : '' ?></td>
@@ -599,7 +608,13 @@ function render_bills(bool $connected, string $tenant, string $tenantId): void {
               <?php elseif ($b['match_status']==='tagged'): ?>
                 <span class="muted">✓ Ref set</span>
               <?php else: ?>
-                <span class="muted">review in Xero</span>
+                <form method="post" action="<?= e(base()) ?>/bills/assign" class="assignform">
+                  <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>"><input type="hidden" name="id" value="<?= (int)$b['id'] ?>">
+                  <select name="trip_id" required><option value="">Assign trip…</option>
+                    <?php foreach ($allTrips as $t): ?><option value="<?= (int)$t['id'] ?>"><?= e($t['trip_number'].' — '.($t['client_name'] ?: 'no client').' · '.$t['aircraft']) ?></option><?php endforeach; ?>
+                  </select>
+                  <button class="btn sm">Assign</button>
+                </form>
               <?php endif; ?>
             </td>
           </tr>
@@ -937,6 +952,9 @@ th.actcol,td.actcol{width:38px;padding-left:0;padding-right:8px;text-align:right
 .chip.green{background:#ecfdf3;color:#067647}.chip.amber{background:#fffaeb;color:#b54708}
 .chip.red{background:#fef3f2;color:#b42318}.chip.blue{background:#eff4ff;color:#1d4ed8}
 .empty{padding:26px;text-align:center;color:var(--mut);border:1px dashed var(--line);border-radius:10px}
+.billdesc{font-size:11px;color:var(--mut);max-width:230px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
+.assignform{display:flex;gap:6px;align-items:center}
+.assignform select{width:auto;min-width:150px;max-width:220px;padding:5px 8px;font-size:12px}
 
 .modal{position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:20px}
 .modal[hidden]{display:none}

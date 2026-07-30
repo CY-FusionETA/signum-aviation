@@ -57,6 +57,18 @@ final class BillRepo
         return self::find($tenantId, (string)$bill['invoice_id']);
     }
 
+    /** Manually link a bill to a trip (staff override for review/ambiguous). */
+    public static function setMatch(int $id, array $trip): void
+    {
+        Db::q(
+            "UPDATE xero_bills
+                SET matched_trip_id=?, matched_trip_number=?, matched_client=?, match_status='matched',
+                    xero_last_error=NULL, updated_at=CURRENT_TIMESTAMP
+              WHERE id=?",
+            [(int)$trip['id'], (string)$trip['trip_number'], (string)$trip['client_name'], $id]
+        );
+    }
+
     public static function markTagged(int $id): void
     {
         Db::q("UPDATE xero_bills SET match_status='tagged', tagged_at=CURRENT_TIMESTAMP, xero_last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", [$id]);

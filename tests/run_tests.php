@@ -148,6 +148,22 @@ check('  → trip 99751', $b4['trip']['trip_number'] ?? '', '99751');
 $b5 = $M::match(['description'=>'Handling at EGGW on 01/01/2026 for N700LE'], $mtrips);
 check('same tail+airport, out-of-window date, 2 trips → ambiguous', $b5['status'], 'ambiguous');
 
+// Tolerant: free-form description (no standard phrasing) still matches by tail.
+$b6 = $M::match(['description'=>'Ground handling services for aircraft MAL191 at Hong Kong (VHHH)'], $mtrips);
+check('free-form desc matches by tail scan', $b6['status'], 'matched');
+check('  → trip 99751 via tail', $b6['trip']['trip_number'] ?? '', '99751');
+check('  → ex_tail backfilled from trip', $b6['ex_tail'], 'MAL191');
+
+// Manual assign overrides a review bill.
+$rev = $M::match(['description'=>'Consulting fee'], $mtrips);
+$brev = \App\Repo\BillRepo::upsert('T2', ['invoice_id'=>'rev-1','supplier'=>'X'], $rev);
+check('unmatched bill stored as review', $brev['match_status'], 'review');
+$t99 = null; foreach (TripRepo::all() as $tt) if ($tt['trip_number']==='99751') $t99 = $tt;
+\App\Service\Bills\BillReconciler::assign((int)$brev['id'], (int)$t99['id']);
+$brev2 = \App\Repo\BillRepo::findById((int)$brev['id']);
+check('manual assign sets matched trip', $brev2['matched_trip_number'], '99751');
+check('manual assign flips status to matched', $brev2['match_status'], 'matched');
+
 // BillRepo persistence
 $brow = \App\Repo\BillRepo::upsert('T1', ['invoice_id'=>'inv-1','supplier'=>'ASA South China Ltd','description'=>'Ground Handling at VHHH on 30/03/2026 for MAL191'], $b1);
 check('bill upsert stores matched trip', $brow['matched_trip_number'], '99751');
