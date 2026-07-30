@@ -215,6 +215,13 @@ check('ready-to-invoice includes the tagged trip', count($ready), 1);
 check('  → trip 99751', $ready[0]['trip']['trip_number'] ?? '', '99751');
 check('  → build is buildable', $ready[0]['build']['buildable'], true);
 
+// Un-invoice: forgetting the link lets a trip be raised again.
+$IR = '\App\Repo\InvoiceRepo';
+$IR::store('DEMO', $ready[0]['trip'], $ready[0]['build'], 'xero-1', 'INV-001');
+check('trip shows invoiced after store', !empty($IR::findByTrip('DEMO', (int)$ready[0]['trip']['id'])), true);
+check('deleteByTrip removes the link', $IR::deleteByTrip('DEMO', (int)$ready[0]['trip']['id']), 1);
+check('trip re-invoiceable after delete', $IR::findByTrip('DEMO', (int)$ready[0]['trip']['id']), null);
+
 // --- 10. Module 5: completeness gate (route legs vs tagged bills) ----
 $CC = '\App\Service\Invoices\CompletenessChecker';
 

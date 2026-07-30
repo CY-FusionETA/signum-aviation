@@ -13,6 +13,13 @@ final class InvoiceRepo
         return Db::one("SELECT * FROM trip_invoices WHERE tenant_id = ? AND trip_id = ?", [$tenantId, $tripId]);
     }
 
+    /** Forget the stored invoice link for a trip so it can be re-created (e.g. after
+     *  deleting the draft in Xero). @return int rows removed. */
+    public static function deleteByTrip(string $tenantId, int $tripId): int
+    {
+        return Db::q("DELETE FROM trip_invoices WHERE tenant_id = ? AND trip_id = ?", [$tenantId, $tripId])->rowCount();
+    }
+
     public static function store(string $tenantId, array $trip, array $build, string $invoiceId, string $invoiceNumber): void
     {
         Db::q("DELETE FROM trip_invoices WHERE tenant_id = ? AND trip_id = ?", [$tenantId, (int)$trip['id']]);
