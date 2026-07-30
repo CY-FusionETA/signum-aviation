@@ -12,4 +12,16 @@ interface XeroClientInterface
      * @return array{xero_po_id: ?string, xero_po_number: ?string, stubbed: bool, error?: string, payload?: array}
      */
     public function createPurchaseOrder(array $trip): array;
+
+    /**
+     * List DRAFT supplier bills (ACCPAY) from the connected org — Module 3 input.
+     * @return array{ok:bool, bills:array, tenant_id?:string, error?:string}
+     */
+    public function listDraftBills(): array;
+
+    /**
+     * Tag a draft bill with the matched trip number (into its Reference).
+     * @return array{ok:bool, stubbed:bool, error?:string}
+     */
+    public function tagBill(string $invoiceId, string $reference): array;
 }

@@ -10,7 +10,9 @@ require __DIR__ . '/../src/bootstrap.php';
 
 use App\Settings;
 use App\Repo\TripRepo;
+use App\Repo\BillRepo;
 use App\Service\Leon\LeonProcessor;
+use App\Service\Bills\BillReconciler;
 use App\Service\Xero\XeroOAuth;
 
 session_start();
@@ -174,8 +176,35 @@ if ($path === '/create-pos' && $method === 'POST') {
     $result = LeonProcessor::createPosForIds($ids, $dryRun);
 }
 
+// --- Module 3: reconcile supplier bills against trips ---------------
+if ($path === '/bills/refresh' && $method === 'POST') {
+    csrf_check();
+    $res = BillReconciler::refresh();
+    if (!empty($res['ok'])) {
+        $s = $res['summary'];
+        $_SESSION['flash_ok'] = "Pulled {$s['pulled']} draft bill(s): {$s['matched']} matched, {$s['ambiguous']} ambiguous, {$s['review']} need review.";
+    } else {
+        $_SESSION['flash_err'] = 'Refresh failed: ' . ($res['error'] ?? 'unknown');
+    }
+    redirect('/?view=bills');
+}
+if ($path === '/bills/tag' && $method === 'POST') {
+    csrf_check();
+    $res = BillReconciler::tag((int)($_POST['id'] ?? 0));
+    $_SESSION[!empty($res['ok']) ? 'flash_ok' : 'flash_err'] = !empty($res['ok'])
+        ? 'Bill tagged with its trip number in Xero.'
+        : 'Tag failed: ' . ($res['error'] ?? 'unknown');
+    redirect('/?view=bills');
+}
+if ($path === '/bills/tag-all' && $method === 'POST') {
+    csrf_check();
+    $r = BillReconciler::tagAllMatched();
+    $_SESSION['flash_ok'] = "Tagged {$r['tagged']} bill(s)" . ($r['failed'] ? ", {$r['failed']} failed" : '') . '.';
+    redirect('/?view=bills');
+}
+
 $view = $result !== null ? 'trips'
-      : (in_array($_GET['view'] ?? '', ['dashboard', 'trips', 'settings'], true) ? $_GET['view'] : 'dashboard');
+      : (in_array($_GET['view'] ?? '', ['dashboard', 'trips', 'bills', 'settings'], true) ? $_GET['view'] : 'dashboard');
 render_home($result, $view);
 
 // ====================================================================
@@ -266,7 +295,7 @@ function render_home(?array $result, string $view): void {
             'created' => (string)($t['created_at'] ?? ''), 'updated' => (string)($t['updated_at'] ?? ''),
         ];
     }
-    $titles = ['dashboard' => 'Dashboard', 'trips' => 'Trips', 'settings' => 'Settings'];
+    $titles = ['dashboard' => 'Dashboard', 'trips' => 'Trips', 'bills' => 'Bills', 'settings' => 'Settings'];
     $email = (string)($_SESSION['email'] ?? admin_email());
     $initial = strtoupper(substr($email, 0, 1) ?: 'S');
     ?><!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -278,7 +307,7 @@ function render_home(?array $result, string $view): void {
       <nav class="snav">
         <a href="<?= e(base()) ?>/?view=dashboard" class="<?= $view==='dashboard'?'active':'' ?>"><?= icon('dashboard') ?><span class="lbl">Dashboard</span></a>
         <a href="<?= e(base()) ?>/?view=trips" class="<?= $view==='trips'?'active':'' ?>"><?= icon('trips') ?><span class="lbl">Trips</span></a>
-        <a class="soon"><?= icon('bills') ?><span class="lbl">Bills</span><span class="soontag">soon</span></a>
+        <a href="<?= e(base()) ?>/?view=bills" class="<?= $view==='bills'?'active':'' ?>"><?= icon('bills') ?><span class="lbl">Bills</span></a>
         <a class="soon"><?= icon('invoice') ?><span class="lbl">Invoices</span><span class="soontag">soon</span></a>
         <a href="<?= e(base()) ?>/?view=settings" class="<?= $view==='settings'?'active':'' ?>"><?= icon('settings') ?><span class="lbl">Settings</span></a>
       </nav>
@@ -300,6 +329,7 @@ function render_home(?array $result, string $view): void {
         <?php if ($err): ?><div class="alert err"><?= e($err) ?></div><?php endif; ?>
         <?php
           if ($view === 'trips')         render_trips($trips, $connected, $tenant, $result);
+          elseif ($view === 'bills')     render_bills($connected, $tenant, $tenantId);
           elseif ($view === 'settings')  render_settings($connected, $tenant);
           else                           render_dashboard($stat, $trips, $connected, $tenant);
         ?>
@@ -499,6 +529,84 @@ function render_settings(bool $connected, string $tenant): void {
         <div class="field"><label class="chk"><input type="checkbox" name="enabled" <?= Settings::bool('xero.enabled') ? 'checked' : '' ?>> Enable live pushes</label></div>
         <div class="field"><label>&nbsp;</label><button class="btn primary">Save settings</button></div>
       </form>
+    </section>
+    <?php
+}
+
+function render_bills(bool $connected, string $tenant, string $tenantId): void {
+    $bills = $connected ? BillRepo::allForTenant($tenantId) : [];
+    $c = ['pulled'=>count($bills),'matched'=>0,'tagged'=>0,'ambiguous'=>0,'review'=>0];
+    foreach ($bills as $b) { $s=(string)$b['match_status']; if(isset($c[$s]))$c[$s]++; }
+    $bpill = function(string $s): string {
+        $m = ['tagged'=>['green','Tagged'],'matched'=>['blue','Matched'],'ambiguous'=>['amber','Ambiguous'],'review'=>['gray','Review']];
+        [$cl,$t] = $m[$s] ?? ['gray', ucfirst($s)];
+        return '<span class="pill '.$cl.'">'.e($t).'</span>';
+    };
+    ?>
+    <p class="lede">Draft supplier bills WazzOCR created in Xero, matched to a trip in your master list. Confirm a match to write its <b>trip number</b> onto the bill's Reference — linking the cost to the trip for client recharge.</p>
+
+    <div class="banner <?= $connected ? 'on' : 'off' ?>">
+      <div class="binfo"><span class="dot"></span>
+        <div><?= $connected ? '<b>Reading '.e($tenant).'</b> <span class="muted">· must be the same org WazzOCR bills into</span>' : '<b>Not connected to Xero</b> <span class="muted">· connect an org to pull bills</span>' ?></div>
+      </div>
+      <div class="bactions">
+        <form method="post" action="<?= e(base()) ?>/bills/refresh"><input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>"><button class="btn primary sm" <?= $connected?'':'disabled' ?>>Refresh from Xero</button></form>
+      </div>
+    </div>
+
+    <section class="card">
+      <div class="chead">
+        <h2>Supplier bills</h2>
+        <div class="reschips">
+          <span class="chip"><?= $c['pulled'] ?> pulled</span>
+          <span class="chip blue"><?= $c['matched'] ?> matched</span>
+          <span class="chip green"><?= $c['tagged'] ?> tagged</span>
+          <span class="chip amber"><?= $c['ambiguous'] + $c['review'] ?> need review</span>
+        </div>
+      </div>
+
+      <?php if (!$connected): ?>
+        <div class="empty">Connect Xero in <a href="<?= e(base()) ?>/?view=settings">Settings</a>, then <b>Refresh from Xero</b> to pull draft bills.</div>
+      <?php elseif (!$bills): ?>
+        <div class="empty">No bills pulled yet. Click <b>Refresh from Xero</b> to fetch draft supplier bills and match them to trips.</div>
+      <?php else: ?>
+        <?php if ($c['matched']): ?>
+        <div class="toolbar">
+          <span class="muted"><?= $c['matched'] ?> matched bill(s) ready to tag</span><span class="spacer"></span>
+          <form method="post" action="<?= e(base()) ?>/bills/tag-all" onsubmit="return confirm('Tag all <?= $c['matched'] ?> matched bill(s) with their trip number in Xero?')">
+            <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>"><button class="btn primary">Tag all matched</button></form>
+        </div>
+        <?php endif; ?>
+        <div class="tablewrap">
+        <table class="grid"><thead><tr>
+          <th>Supplier</th><th>Bill</th><th>Date</th><th class="num">Amount</th>
+          <th>Extracted</th><th>Matched trip → client</th><th>Status</th><th></th>
+        </tr></thead><tbody>
+        <?php foreach ($bills as $b):
+            $ex = trim(implode(' · ', array_filter([$b['ex_tail'], $b['ex_airport'], $b['ex_date']])));
+        ?>
+          <tr>
+            <td><?= e($b['supplier'] ?: '—') ?></td>
+            <td class="mono" title="<?= e($b['description']) ?>"><?= e($b['invoice_number'] ?: substr((string)$b['xero_invoice_id'],0,8)) ?></td>
+            <td class="nowrap"><?= e($b['bill_date']) ?></td>
+            <td class="num"><?= $b['total']!==null ? e($b['currency'].' '.number_format((float)$b['total'],2)) : '' ?></td>
+            <td class="mono" style="font-size:12px"><?= e($ex ?: '—') ?></td>
+            <td><?php if ($b['matched_trip_number']): ?><span class="mono"><?= e($b['matched_trip_number']) ?></span> <span class="muted">→ <?= e($b['matched_client'] ?: 'no client') ?></span><?php else: ?><span class="muted">—</span><?php endif; ?></td>
+            <td><?= $bpill((string)$b['match_status']) ?><?= !empty($b['xero_last_error']) ? ' <span class="warnmark" title="'.e($b['xero_last_error']).'">!</span>' : '' ?></td>
+            <td class="nowrap">
+              <?php if ($b['match_status']==='matched'): ?>
+                <form method="post" action="<?= e(base()) ?>/bills/tag" style="display:inline"><input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>"><input type="hidden" name="id" value="<?= (int)$b['id'] ?>"><button class="btn sm">Tag <?= e($b['matched_trip_number']) ?></button></form>
+              <?php elseif ($b['match_status']==='tagged'): ?>
+                <span class="muted">✓ Ref set</span>
+              <?php else: ?>
+                <span class="muted">review in Xero</span>
+              <?php endif; ?>
+            </td>
+          </tr>
+        <?php endforeach; ?>
+        </tbody></table>
+        </div>
+      <?php endif; ?>
     </section>
     <?php
 }

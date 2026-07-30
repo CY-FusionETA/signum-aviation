@@ -51,3 +51,32 @@ CREATE TABLE IF NOT EXISTS leon_trips (
 );
 
 CREATE INDEX IF NOT EXISTS idx_leon_trips_tenant ON leon_trips (tenant_id);
+
+-- Module 3: draft supplier bills pulled from Xero, matched to a trip in the
+-- master list, and (on confirm) tagged with the trip number. Keyed by
+-- (tenant, xero invoice) so the same bill in two orgs is tracked separately.
+CREATE TABLE IF NOT EXISTS xero_bills (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant_id           TEXT,
+  xero_invoice_id     TEXT NOT NULL,
+  invoice_number      TEXT,
+  supplier            TEXT,
+  bill_date           TEXT,               -- ISO yyyy-mm-dd
+  reference           TEXT,
+  total               REAL,
+  currency            TEXT,
+  description         TEXT,               -- concatenated line descriptions
+  ex_airport          TEXT,               -- extracted ICAO
+  ex_date             TEXT,               -- extracted service date (ISO)
+  ex_tail             TEXT,               -- extracted aircraft tail
+  match_status        TEXT,               -- matched | ambiguous | review | tagged
+  matched_trip_id     INTEGER,
+  matched_trip_number TEXT,
+  matched_client      TEXT,
+  tagged_at           TEXT,
+  xero_last_error     TEXT,
+  created_at          TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at          TEXT DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE (tenant_id, xero_invoice_id)
+);
+CREATE INDEX IF NOT EXISTS idx_xero_bills_status ON xero_bills (match_status);

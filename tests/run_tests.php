@@ -122,6 +122,45 @@ check('no create/fail on skip', $res['summary']['created'] + $res['summary']['fa
 check('hasPoInTenant true for current org', TripRepo::hasPoInTenant(TripRepo::findById((int)$t0['id']), 'ORG-A'), true);
 check('hasPoInTenant false for other org', TripRepo::hasPoInTenant(TripRepo::findById((int)$t0['id']), 'ORG-B'), false);
 
+// --- 8. Module 3: match a supplier bill to a trip -------------------
+TripRepo::upsert(['trip_number'=>'99751','client_name'=>'Signum Malaysia S/B','aircraft'=>'MAL191','route'=>'VHHH','start_date'=>'2026-03-26','end_date'=>'2026-03-30','flights_count'=>2], 'inc', 'test');
+$mtrips = TripRepo::all();
+$M = '\App\Service\Bills\BillMatcher';
+
+$b1 = $M::match(['description'=>'Ground Handling at VHHH on 30/03/2026 for MAL191','reference'=>''], $mtrips);
+check('bill matched by tail+date+airport', $b1['status'], 'matched');
+check('  → correct trip (99751)', $b1['trip']['trip_number'] ?? '', '99751');
+check('  → extracted tail', $b1['ex_tail'], 'MAL191');
+check('  → extracted airport', $b1['ex_airport'], 'VHHH');
+check('  → extracted date → ISO', $b1['ex_date'], '2026-03-30');
+
+$b2 = $M::match(['description'=>'Landing, Handling & Associated Charges at EGGW on 23/07/2026 for N700LE'], $mtrips);
+check('service date narrows shared tail to one trip', $b2['status'], 'matched');
+check('  → trip 35528 (23 Jul)', $b2['trip']['trip_number'] ?? '', '35528');
+
+$b3 = $M::match(['description'=>'Monthly consulting services'], $mtrips);
+check('unrelated bill → review', $b3['status'], 'review');
+
+$b4 = $M::match(['description'=>'Handling charges','reference'=>'Trip 99751'], $mtrips);
+check('explicit trip number in reference → matched', $b4['status'], 'matched');
+check('  → trip 99751', $b4['trip']['trip_number'] ?? '', '99751');
+
+$b5 = $M::match(['description'=>'Handling at EGGW on 01/01/2026 for N700LE'], $mtrips);
+check('same tail+airport, out-of-window date, 2 trips → ambiguous', $b5['status'], 'ambiguous');
+
+// BillRepo persistence
+$brow = \App\Repo\BillRepo::upsert('T1', ['invoice_id'=>'inv-1','supplier'=>'ASA South China Ltd','description'=>'Ground Handling at VHHH on 30/03/2026 for MAL191'], $b1);
+check('bill upsert stores matched trip', $brow['matched_trip_number'], '99751');
+check('bill upsert stores client', $brow['matched_client'], 'Signum Malaysia S/B');
+check('bill upsert status', $brow['match_status'], 'matched');
+$brow2 = \App\Repo\BillRepo::upsert('T1', ['invoice_id'=>'inv-1'], $b1);
+check('re-upsert same invoice: no duplicate', count(\App\Repo\BillRepo::allForTenant('T1')), 1);
+
+// reconcile without a Xero connection fails cleanly
+\App\Service\Xero\XeroOAuth::disconnect();
+$rr = \App\Service\Bills\BillReconciler::refresh();
+check('refresh without Xero → ok=false', $rr['ok'], false);
+
 echo "\n" . str_repeat('=', 40) . "\n";
 printf("TOTAL: %d passed, %d failed\n", $pass, $fail);
 exit($fail === 0 ? 0 : 1);

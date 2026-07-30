@@ -151,4 +151,84 @@ final class XeroApiClient implements XeroClientInterface
         }
         return trim(substr($raw, 0, 300)) ?: 'Unknown Xero error.';
     }
+
+    // --- Module 3: read + tag supplier bills (ACCPAY) ----------------
+
+    /**
+     * List DRAFT supplier bills (ACCPAY invoices) from the connected org — the
+     * ones WazzOCR just created. Returns a flat shape for the reconciler.
+     * @return array{ok:bool, bills:array, error?:string}
+     */
+    public function listDraftBills(): array
+    {
+        try {
+            $auth = XeroOAuth::accessToken();
+            if (!$auth) return ['ok' => false, 'bills' => [], 'error' => 'Xero is not connected.'];
+
+            $where = rawurlencode('Type=="ACCPAY" AND Status=="DRAFT"');
+            [$code, $body] = XeroOAuth::http('GET', self::API . 'Invoices?where=' . $where, [
+                'Authorization: Bearer ' . $auth['access_token'],
+                'Xero-tenant-id: ' . $auth['tenant_id'],
+                'Accept: application/json',
+            ]);
+            $json = json_decode($body, true);
+            if ($code < 200 || $code >= 300) {
+                return ['ok' => false, 'bills' => [], 'error' => self::extractError($json, $body)];
+            }
+            $bills = [];
+            foreach ($json['Invoices'] ?? [] as $inv) {
+                $descs = array_map(fn($l) => (string)($l['Description'] ?? ''), $inv['LineItems'] ?? []);
+                $bills[] = [
+                    'invoice_id'     => (string)($inv['InvoiceID'] ?? ''),
+                    'invoice_number' => (string)($inv['InvoiceNumber'] ?? ''),
+                    'supplier'       => (string)($inv['Contact']['Name'] ?? ''),
+                    'bill_date'      => self::xeroDate($inv['DateString'] ?? ($inv['Date'] ?? '')),
+                    'reference'      => (string)($inv['Reference'] ?? ''),
+                    'total'          => isset($inv['Total']) ? (float)$inv['Total'] : null,
+                    'currency'       => (string)($inv['CurrencyCode'] ?? ''),
+                    'description'    => trim(implode(' | ', array_filter($descs))),
+                ];
+            }
+            return ['ok' => true, 'bills' => $bills, 'tenant_id' => $auth['tenant_id']];
+        } catch (\Throwable $e) {
+            return ['ok' => false, 'bills' => [], 'error' => $e->getMessage()];
+        }
+    }
+
+    /**
+     * Tag a draft bill with the matched trip number (written to its Reference),
+     * linking the supplier cost to the trip for later client recharge.
+     * @return array{ok:bool, stubbed:bool, error?:string}
+     */
+    public function tagBill(string $invoiceId, string $reference): array
+    {
+        try {
+            $auth = XeroOAuth::accessToken();
+            if (!$auth) return ['ok' => false, 'stubbed' => false, 'error' => 'Xero is not connected.'];
+
+            [$code, $body] = XeroOAuth::http('POST', self::API . 'Invoices', [
+                'Authorization: Bearer ' . $auth['access_token'],
+                'Xero-tenant-id: ' . $auth['tenant_id'],
+                'Accept: application/json',
+                'Content-Type: application/json',
+            ], json_encode(['Invoices' => [['InvoiceID' => $invoiceId, 'Reference' => $reference]]], JSON_UNESCAPED_UNICODE));
+
+            $json = json_decode($body, true);
+            $ok = $code >= 200 && $code < 300 && !empty($json['Invoices'][0]['InvoiceID']);
+            return $ok ? ['ok' => true, 'stubbed' => false]
+                       : ['ok' => false, 'stubbed' => false, 'error' => self::extractError($json, $body)];
+        } catch (\Throwable $e) {
+            return ['ok' => false, 'stubbed' => false, 'error' => $e->getMessage()];
+        }
+    }
+
+    /** Xero dates arrive as "2026-03-26T00:00:00" (DateString) or "/Date(ms+0000)/". */
+    private static function xeroDate(string $d): string
+    {
+        $d = trim($d);
+        if ($d === '') return '';
+        if (preg_match('/^(\d{4}-\d{2}-\d{2})/', $d, $m)) return $m[1];
+        if (preg_match('#/Date\((-?\d+)#', $d, $m)) return gmdate('Y-m-d', (int)round(((int)$m[1]) / 1000));
+        return '';
+    }
 }
