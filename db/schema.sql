@@ -80,3 +80,24 @@ CREATE TABLE IF NOT EXISTS xero_bills (
   UNIQUE (tenant_id, xero_invoice_id)
 );
 CREATE INDEX IF NOT EXISTS idx_xero_bills_status ON xero_bills (match_status);
+
+-- Module 5: client sales invoices raised from a trip's tagged bills.
+-- One row per trip invoiced (keyed by tenant + trip).
+CREATE TABLE IF NOT EXISTS trip_invoices (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant_id           TEXT,
+  trip_id             INTEGER,
+  trip_number         TEXT,
+  client              TEXT,
+  currency            TEXT,
+  subtotal            REAL,
+  admin               REAL,
+  support             REAL,
+  total               REAL,
+  xero_invoice_id     TEXT,
+  xero_invoice_number TEXT,
+  invoiced_at         TEXT,
+  xero_last_error     TEXT,
+  created_at          TEXT DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE (tenant_id, trip_id)
+);

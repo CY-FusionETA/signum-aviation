@@ -222,6 +222,50 @@ final class XeroApiClient implements XeroClientInterface
         }
     }
 
+    // --- Module 5: raise a client sales invoice (ACCREC) -------------
+
+    /**
+     * Create a DRAFT sales invoice (ACCREC) to a client.
+     * @param array $lines  each ['Description','Quantity','UnitAmount', optional 'AccountCode','TaxType']
+     * @return array{ok:bool, invoice_id:?string, invoice_number:?string, stubbed:bool, error?:string}
+     */
+    public function createSalesInvoice(string $clientName, string $currency, string $reference, array $lines): array
+    {
+        try {
+            $auth = XeroOAuth::accessToken();
+            if (!$auth) return ['ok' => false, 'invoice_id' => null, 'invoice_number' => null, 'stubbed' => false, 'error' => 'Xero is not connected.'];
+
+            $contactId = $this->ensureContactId($auth, $clientName);
+            if (!$contactId) return ['ok' => false, 'invoice_id' => null, 'invoice_number' => null, 'stubbed' => false, 'error' => 'Could not resolve a Xero contact for the client.'];
+
+            $invoice = array_filter([
+                'Type'         => 'ACCREC',
+                'Contact'      => ['ContactID' => $contactId],
+                'Reference'    => $reference,
+                'CurrencyCode' => $currency !== '' ? $currency : null,
+                'Status'       => 'DRAFT',
+                'LineItems'    => $lines,
+            ], fn($v) => $v !== null && $v !== '');
+
+            [$code, $body] = XeroOAuth::http('POST', self::API . 'Invoices', [
+                'Authorization: Bearer ' . $auth['access_token'],
+                'Xero-tenant-id: ' . $auth['tenant_id'],
+                'Accept: application/json',
+                'Content-Type: application/json',
+            ], json_encode(['Invoices' => [$invoice]], JSON_UNESCAPED_UNICODE));
+
+            $json = json_decode($body, true);
+            $inv  = $json['Invoices'][0] ?? null;
+            $id   = $inv['InvoiceID'] ?? null;
+            if ($code < 200 || $code >= 300 || !$id) {
+                return ['ok' => false, 'invoice_id' => null, 'invoice_number' => null, 'stubbed' => false, 'error' => self::extractError($json, $body)];
+            }
+            return ['ok' => true, 'invoice_id' => (string)$id, 'invoice_number' => (string)($inv['InvoiceNumber'] ?? ''), 'stubbed' => false];
+        } catch (\Throwable $e) {
+            return ['ok' => false, 'invoice_id' => null, 'invoice_number' => null, 'stubbed' => false, 'error' => $e->getMessage()];
+        }
+    }
+
     /** Xero dates arrive as "2026-03-26T00:00:00" (DateString) or "/Date(ms+0000)/". */
     private static function xeroDate(string $d): string
     {

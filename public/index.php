@@ -13,6 +13,7 @@ use App\Repo\TripRepo;
 use App\Repo\BillRepo;
 use App\Service\Leon\LeonProcessor;
 use App\Service\Bills\BillReconciler;
+use App\Service\Invoices\InvoiceService;
 use App\Service\Xero\XeroOAuth;
 
 session_start();
@@ -93,6 +94,10 @@ if ($path === '/settings' && $method === 'POST') {
     Settings::set('xero.enabled', isset($_POST['enabled']) ? '1' : '0');
     Settings::set('currency.inc', strtoupper(trim($_POST['currency_inc'] ?? '')));
     Settings::set('currency.ltd', strtoupper(trim($_POST['currency_ltd'] ?? '')));
+    if (isset($_POST['inv_markup']))    Settings::set('invoice.markup', (string)(float)$_POST['inv_markup']);
+    if (isset($_POST['inv_admin']))     Settings::set('invoice.admin_pct', (string)(float)$_POST['inv_admin']);
+    if (isset($_POST['inv_support']))   Settings::set('invoice.support_fee', (string)(float)$_POST['inv_support']);
+    Settings::set('invoice.account_code', trim($_POST['inv_account'] ?? ''));
     $_SESSION['flash_ok'] = 'Settings saved.'; redirect('/?view=settings');
 }
 
@@ -211,8 +216,18 @@ if ($path === '/bills/tag-all' && $method === 'POST') {
     redirect('/?view=bills');
 }
 
+// --- Module 5: raise a client sales invoice for a trip --------------
+if ($path === '/invoices/create' && $method === 'POST') {
+    csrf_check();
+    $res = InvoiceService::createForTrip((int)($_POST['trip_id'] ?? 0));
+    $_SESSION[!empty($res['ok']) ? 'flash_ok' : 'flash_err'] = !empty($res['ok'])
+        ? 'Draft client invoice ' . ($res['invoice_number'] ?: '') . ' created in Xero.'
+        : 'Invoice failed: ' . ($res['error'] ?? 'unknown');
+    redirect('/?view=invoices');
+}
+
 $view = $result !== null ? 'trips'
-      : (in_array($_GET['view'] ?? '', ['dashboard', 'trips', 'bills', 'settings'], true) ? $_GET['view'] : 'dashboard');
+      : (in_array($_GET['view'] ?? '', ['dashboard', 'trips', 'bills', 'invoices', 'settings'], true) ? $_GET['view'] : 'dashboard');
 render_home($result, $view);
 
 // ====================================================================
@@ -303,7 +318,7 @@ function render_home(?array $result, string $view): void {
             'created' => (string)($t['created_at'] ?? ''), 'updated' => (string)($t['updated_at'] ?? ''),
         ];
     }
-    $titles = ['dashboard' => 'Dashboard', 'trips' => 'Trips', 'bills' => 'Bills', 'settings' => 'Settings'];
+    $titles = ['dashboard' => 'Dashboard', 'trips' => 'Trips', 'bills' => 'Bills', 'invoices' => 'Invoices', 'settings' => 'Settings'];
     $email = (string)($_SESSION['email'] ?? admin_email());
     $initial = strtoupper(substr($email, 0, 1) ?: 'S');
     ?><!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -316,7 +331,7 @@ function render_home(?array $result, string $view): void {
         <a href="<?= e(base()) ?>/?view=dashboard" class="<?= $view==='dashboard'?'active':'' ?>"><?= icon('dashboard') ?><span class="lbl">Dashboard</span></a>
         <a href="<?= e(base()) ?>/?view=trips" class="<?= $view==='trips'?'active':'' ?>"><?= icon('trips') ?><span class="lbl">Trips</span></a>
         <a href="<?= e(base()) ?>/?view=bills" class="<?= $view==='bills'?'active':'' ?>"><?= icon('bills') ?><span class="lbl">Bills</span></a>
-        <a class="soon"><?= icon('invoice') ?><span class="lbl">Invoices</span><span class="soontag">soon</span></a>
+        <a href="<?= e(base()) ?>/?view=invoices" class="<?= $view==='invoices'?'active':'' ?>"><?= icon('invoice') ?><span class="lbl">Invoices</span></a>
         <a href="<?= e(base()) ?>/?view=settings" class="<?= $view==='settings'?'active':'' ?>"><?= icon('settings') ?><span class="lbl">Settings</span></a>
       </nav>
       <div class="suser">
@@ -338,6 +353,7 @@ function render_home(?array $result, string $view): void {
         <?php
           if ($view === 'trips')         render_trips($trips, $connected, $tenant, $result);
           elseif ($view === 'bills')     render_bills($connected, $tenant, $tenantId);
+          elseif ($view === 'invoices')  render_invoices($connected, $tenant, $tenantId);
           elseif ($view === 'settings')  render_settings($connected, $tenant);
           else                           render_dashboard($stat, $trips, $connected, $tenant);
         ?>
@@ -509,6 +525,66 @@ function render_trips(array $trips, bool $connected, string $tenant, ?array $res
     <?php
 }
 
+function render_invoices(bool $connected, string $tenant, string $tenantId): void {
+    $cfg = InvoiceService::config();
+    $ready = $connected ? InvoiceService::readyTrips($tenantId) : [];
+    $pending = array_values(array_filter($ready, fn($r) => empty($r['invoice'])));
+    $money = fn($cur, $n) => e(($cur !== '' ? $cur . ' ' : '') . number_format((float)$n, 2));
+    ?>
+    <p class="lede">Trips whose supplier bills are tagged, turned into a draft <b>client sales invoice</b>: each cost is recharged (×<?= e(rtrim(rtrim(number_format((float)$cfg['markup'],2),'0'),'.')) ?>), plus a <?= e(rtrim(rtrim(number_format((float)$cfg['admin_pct'],2),'0'),'.')) ?>% admin charge<?= $cfg['support_fee']>0 ? ' and a trip-support fee' : '' ?>. Rates are set in <a class="link" href="<?= e(base()) ?>/?view=settings">Settings</a>.</p>
+
+    <div class="banner <?= $connected ? 'on' : 'off' ?>">
+      <div class="binfo"><span class="dot"></span>
+        <div><?= $connected ? '<b>Invoicing into '.e($tenant).'</b> <span class="muted">· drafts only — review + send in Xero</span>' : '<b>Not connected to Xero</b> <span class="muted">· connect an org first</span>' ?></div>
+      </div>
+    </div>
+
+    <section class="card">
+      <div class="chead"><h2>Ready to invoice</h2><span class="muted"><?= count($pending) ?> trip(s) pending · <?= count($ready)-count($pending) ?> invoiced</span></div>
+      <?php if (!$connected): ?>
+        <div class="empty">Connect Xero in <a href="<?= e(base()) ?>/?view=settings">Settings</a> first.</div>
+      <?php elseif (!$ready): ?>
+        <div class="empty">No trips ready yet. Tag some bills to their trips in <a href="<?= e(base()) ?>/?view=bills">Bills</a> — trips with tagged bills appear here.</div>
+      <?php else: ?>
+        <div class="tablewrap">
+        <table class="grid"><thead><tr>
+          <th>Trip</th><th>Client</th><th class="num">Bills</th><th class="num">Recharge</th><th class="num">Admin</th><th class="num">Total</th><th>Status</th><th></th>
+        </tr></thead><tbody>
+        <?php foreach ($ready as $r): $t=$r['trip']; $bd=$r['build']; $inv=$r['invoice']; ?>
+          <tr>
+            <td class="mono"><?= e($t['trip_number']) ?></td>
+            <td><?= e($t['client_name'] ?: '—') ?></td>
+            <td class="num"><?= count($r['bills']) ?></td>
+            <?php if ($inv): ?>
+              <td class="num muted">—</td><td class="num muted">—</td>
+              <td class="num"><b><?= $money($inv['currency'], $inv['total']) ?></b></td>
+              <td><span class="pill green">Invoiced</span> <span class="mono"><?= e($inv['xero_invoice_number']) ?></span></td>
+              <td class="nowrap"><span class="muted">✓ in Xero</span></td>
+            <?php elseif (!empty($bd['buildable'])): ?>
+              <td class="num"><?= $money($bd['currency'], $bd['subtotal']) ?></td>
+              <td class="num"><?= $money($bd['currency'], $bd['admin']) ?></td>
+              <td class="num"><b><?= $money($bd['currency'], $bd['total']) ?></b></td>
+              <td><span class="pill blue">Ready</span></td>
+              <td class="nowrap">
+                <form method="post" action="<?= e(base()) ?>/invoices/create" onsubmit="return confirm('Create a draft <?= e($bd['currency']) ?> invoice to <?= e(addslashes($t['client_name'] ?: 'the client')) ?> for <?= $money($bd['currency'],$bd['total']) ?>?')">
+                  <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>"><input type="hidden" name="trip_id" value="<?= (int)$t['id'] ?>">
+                  <button class="btn primary sm">Create draft invoice</button>
+                </form>
+              </td>
+            <?php else: ?>
+              <td class="num muted" colspan="3"><?= e($bd['reason']) ?></td>
+              <td><span class="pill amber">Manual</span></td>
+              <td class="nowrap"><span class="muted">raise in Xero</span></td>
+            <?php endif; ?>
+          </tr>
+        <?php endforeach; ?>
+        </tbody></table>
+        </div>
+      <?php endif; ?>
+    </section>
+    <?php
+}
+
 function render_settings(bool $connected, string $tenant): void {
     ?>
     <section class="card">
@@ -535,6 +611,11 @@ function render_settings(bool $connected, string $tenant): void {
         <div class="field"><label>Inc currency</label><input name="currency_inc" value="<?= e((string)Settings::get('currency.inc','')) ?>" placeholder="org base"></div>
         <div class="field"><label>Ltd currency</label><input name="currency_ltd" value="<?= e((string)Settings::get('currency.ltd','')) ?>" placeholder="org base"></div>
         <div class="field"><label class="chk"><input type="checkbox" name="enabled" <?= Settings::bool('xero.enabled') ? 'checked' : '' ?>> Enable live pushes</label></div>
+        <div class="field" style="flex:1 1 100%"><label style="font-weight:600;color:var(--ink);font-size:13px">Invoice rules (Module 5)</label></div>
+        <div class="field"><label>Recharge markup (×)</label><input name="inv_markup" value="<?= e((string)Settings::get('invoice.markup','1.02')) ?>"></div>
+        <div class="field"><label>Admin charge (%)</label><input name="inv_admin" value="<?= e((string)Settings::get('invoice.admin_pct','11')) ?>"></div>
+        <div class="field"><label>Trip support fee</label><input name="inv_support" value="<?= e((string)Settings::get('invoice.support_fee','0')) ?>"></div>
+        <div class="field"><label>Revenue account code</label><input name="inv_account" value="<?= e((string)Settings::get('invoice.account_code','')) ?>" placeholder="e.g. 200"></div>
         <div class="field"><label>&nbsp;</label><button class="btn primary">Save settings</button></div>
       </form>
     </section>

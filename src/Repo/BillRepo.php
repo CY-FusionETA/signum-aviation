@@ -88,4 +88,10 @@ final class BillRepo
     {
         return Db::all("SELECT * FROM xero_bills WHERE tenant_id = ? AND match_status = 'matched'", [$tenantId]);
     }
+
+    /** All tagged bills (linked to a trip) — Module 5 input. */
+    public static function tagged(string $tenantId): array
+    {
+        return Db::all("SELECT * FROM xero_bills WHERE tenant_id = ? AND match_status = 'tagged' AND matched_trip_id IS NOT NULL", [$tenantId]);
+    }
 }

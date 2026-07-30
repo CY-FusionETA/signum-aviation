@@ -177,6 +177,39 @@ check('re-upsert same invoice: no duplicate', count(\App\Repo\BillRepo::allForTe
 $rr = \App\Service\Bills\BillReconciler::refresh();
 check('refresh without Xero → ok=false', $rr['ok'], false);
 
+// --- 9. Module 5: build a client invoice from tagged bills ----------
+$IB = '\App\Service\Invoices\InvoiceBuilder';
+$ib_bills = [
+    ['total'=>100,'currency'=>'USD','description'=>'Ground Handling at VHHH on 30/03/2026 for MAL191','supplier'=>'ASA'],
+    ['total'=>50, 'currency'=>'USD','description'=>'Landing','supplier'=>'X'],
+];
+$bd = $IB::build($ib_bills, ['markup'=>1.02,'admin_pct'=>11,'support_fee'=>0,'account_code'=>'']);
+check('invoice buildable (single currency)', $bd['buildable'], true);
+check('invoice currency', $bd['currency'], 'USD');
+check('recharge subtotal (×1.02)', number_format($bd['subtotal'],2), '153.00');
+check('admin 11%', number_format($bd['admin'],2), '16.83');
+check('invoice total', number_format($bd['total'],2), '169.83');
+check('lines = 2 recharge + admin', count($bd['lines']), 3);
+
+$bd2 = $IB::build($ib_bills, ['markup'=>1.0,'admin_pct'=>11,'support_fee'=>650,'account_code'=>'200']);
+check('support fee adds a line', count($bd2['lines']), 4);
+check('account code applied to line', $bd2['lines'][0]['AccountCode'] ?? '', '200');
+
+$bdm = $IB::build([['total'=>100,'currency'=>'USD'],['total'=>50,'currency'=>'EUR']], ['markup'=>1.02]);
+check('mixed-currency bills → not buildable', $bdm['buildable'], false);
+
+check('invoice reference format', $IB::reference(['aircraft'=>'MAL191','end_date'=>'2026-03-30','trip_number'=>'99751']), 'MAL191 2026-03-30 99751');
+
+// readyTrips picks up a trip once its bill is tagged
+$t99 = null; foreach (TripRepo::all() as $tt) if ($tt['trip_number']==='99751') $t99 = $tt;
+$tb = \App\Repo\BillRepo::upsert('DEMO', ['invoice_id'=>'d1','supplier'=>'ASA','total'=>100,'currency'=>'USD','description'=>'Ground Handling at VHHH on 30/03/2026 for MAL191'],
+        \App\Service\Bills\BillMatcher::match(['description'=>'Ground Handling at VHHH on 30/03/2026 for MAL191'], TripRepo::all()));
+\App\Repo\BillRepo::markTagged((int)$tb['id']);
+$ready = \App\Service\Invoices\InvoiceService::readyTrips('DEMO');
+check('ready-to-invoice includes the tagged trip', count($ready), 1);
+check('  → trip 99751', $ready[0]['trip']['trip_number'] ?? '', '99751');
+check('  → build is buildable', $ready[0]['build']['buildable'], true);
+
 echo "\n" . str_repeat('=', 40) . "\n";
 printf("TOTAL: %d passed, %d failed\n", $pass, $fail);
 exit($fail === 0 ? 0 : 1);

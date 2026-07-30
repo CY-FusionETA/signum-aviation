@@ -24,4 +24,10 @@ interface XeroClientInterface
      * @return array{ok:bool, stubbed:bool, error?:string}
      */
     public function tagBill(string $invoiceId, string $reference): array;
+
+    /**
+     * Create a DRAFT client sales invoice (ACCREC) — Module 5.
+     * @return array{ok:bool, invoice_id:?string, invoice_number:?string, stubbed:bool, error?:string}
+     */
+    public function createSalesInvoice(string $clientName, string $currency, string $reference, array $lines): array;
 }

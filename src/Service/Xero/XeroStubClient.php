@@ -32,4 +32,9 @@ final class XeroStubClient implements XeroClientInterface
     {
         return ['ok' => false, 'stubbed' => true, 'error' => 'Xero is not connected.'];
     }
+
+    public function createSalesInvoice(string $clientName, string $currency, string $reference, array $lines): array
+    {
+        return ['ok' => false, 'invoice_id' => null, 'invoice_number' => null, 'stubbed' => true, 'error' => 'Xero is not connected.'];
+    }
 }

@@ -41,4 +41,12 @@ return [
         'inc' => '',   // e.g. 'USD' for Signum Aviation Inc once USD is enabled in Xero
         'ltd' => '',   // e.g. 'GBP' for Signum Aviation Ltd
     ],
+
+    // Module 5 client-invoice rules (also editable in the Settings UI).
+    'invoice' => [
+        'markup'       => 1.02,   // recharge each supplier cost × this (FX/margin buffer)
+        'admin_pct'    => 11,     // admin charge as a % of the recharge subtotal
+        'support_fee'  => 0,      // flat trip-support fee per invoice (0 = none)
+        'account_code' => '',     // Xero revenue account code for the lines (e.g. '200')
+    ],
 ];
