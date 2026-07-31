@@ -6,6 +6,19 @@
  * WhatsApp send — WazzOCR OCRs the document and creates the draft Xero bill in
  * the routed account's connected organisation.
  *
+ * DEDUPE IS PER ATTACHMENT (not per thread). Each attachment that's been
+ * forwarded is recorded in Script Properties by (message id + size + name), so:
+ *   - re-sending the same invoice as a NEW email (even a reply in the same
+ *     thread) is a new message → it gets forwarded again, and
+ *   - the same attachment is never sent twice.
+ * This is what lets you re-test the same invoice: just send it as a fresh email.
+ *
+ * ONE-TIME after pasting/upgrading this script: run `seedProcessed` once. It
+ * records every invoice already in your mailbox as "done" WITHOUT sending, so
+ * upgrading doesn't re-forward your whole history. New emails from then on flow
+ * through normally. (To wipe the record and re-forward everything, run
+ * `resetProcessed`.)
+ *
  * HOW THE ROUTING WORKS (no phone needed):
  *   WazzOCR's /api/whatsapp/process-file picks the account from two body fields:
  *     channelId  — the shared trial channel id (WazzOCR → Connections)
@@ -24,7 +37,8 @@
  *   1. Gmail filter → apply label CONFIG.SOURCE_LABEL to supplier-invoice emails.
  *   2. script.google.com → new project bound to that Gmail account → paste this.
  *   3. Fill CONFIG. Run `setup` once (grant perms, create labels), then
- *      `installTrigger` once (polls every 5 min). Use `run` to test by hand.
+ *      `seedProcessed` once, then `installTrigger` once (polls every 5 min).
+ *      Use `run` to test by hand.
  */
 
 var CONFIG = {
@@ -49,32 +63,45 @@ function run() {
   ensureLabels_();
   var processed = GmailApp.getUserLabelByName(CONFIG.PROCESSED_LABEL);
   var errored   = GmailApp.getUserLabelByName(CONFIG.ERROR_LABEL);
+  var props     = PropertiesService.getScriptProperties();
 
-  var query = 'label:' + CONFIG.SOURCE_LABEL +
-              ' -label:' + CONFIG.PROCESSED_LABEL +
-              ' -label:' + CONFIG.ERROR_LABEL +
-              ' has:attachment';
+  // Every source-labeled thread with attachments — deduped at the ATTACHMENT
+  // level below, so processed threads are rescanned and new messages in them
+  // still go through.
+  var query   = 'label:' + CONFIG.SOURCE_LABEL + ' has:attachment';
   var threads = GmailApp.search(query, 0, CONFIG.MAX_THREADS_PER_RUN);
-  Logger.log('Found %s thread(s) to process', threads.length);
+  Logger.log('Scanning %s thread(s)', threads.length);
 
   threads.forEach(function (thread) {
-    var sentAny = false, failed = false;
+    var anyProcessed = false, anyFailed = false;
     thread.getMessages().forEach(function (msg) {
       msg.getAttachments().forEach(function (att) {
         if (!isForwardable_(att)) return;
+        var key = attKey_(msg, att);
+        if (props.getProperty(key)) return;            // this exact attachment already forwarded
         try {
           sendToWazzOcr_(att, msg);
-          sentAny = true;
+          props.setProperty(key, String(Date.now())); // record only on success
+          anyProcessed = true;
         } catch (err) {
-          failed = true;
+          anyFailed = true;                            // not recorded → retried next run
           Logger.log('WazzOCR send failed for "%s": %s', att.getName(), err);
         }
       });
     });
-    // Failure → tag for review and DON'T mark processed, so it retries next run
-    // once the config/allowed-phone is fixed. Otherwise mark done.
-    thread.addLabel(failed ? errored : processed);
+    // Labels are just a visual indicator now (dedupe is the property store).
+    if (anyFailed) {
+      thread.addLabel(errored);
+    } else if (anyProcessed) {
+      thread.addLabel(processed);
+      thread.removeLabel(errored);
+    }
   });
+}
+
+/** Stable key for one attachment: message id + size + name. */
+function attKey_(msg, att) {
+  return 'att_' + msg.getId() + '_' + att.getSize() + '_' + (att.getName() || '');
 }
 
 /** Should this attachment be forwarded? */
@@ -85,7 +112,7 @@ function isForwardable_(att) {
   return CONFIG.ALLOWED_EXT.indexOf(ext) >= 0;
 }
 
-/** POST one attachment to WazzOCR. Throws on failure so the thread is retried. */
+/** POST one attachment to WazzOCR. Throws on failure so the attachment is retried. */
 function sendToWazzOcr_(att, msg) {
   var res = UrlFetchApp.fetch(CONFIG.WAZZOCR_URL, {
     method: 'post',
@@ -120,6 +147,38 @@ function sendToWazzOcr_(att, msg) {
     return; // treated as processed; nothing to bill
   }
   Logger.log('WazzOCR accepted "%s" (msg %s) → HTTP %s', att.getName(), msg.getId(), code);
+}
+
+/**
+ * Run ONCE after pasting/upgrading: record every attachment already in your
+ * invoice mailbox as "done" WITHOUT sending, so the switch to per-attachment
+ * dedupe doesn't re-forward your history. New emails after this flow normally.
+ */
+function seedProcessed() {
+  ensureLabels_();
+  var props   = PropertiesService.getScriptProperties();
+  var threads = GmailApp.search('label:' + CONFIG.SOURCE_LABEL + ' has:attachment', 0, 200);
+  var n = 0;
+  threads.forEach(function (thread) {
+    thread.getMessages().forEach(function (msg) {
+      msg.getAttachments().forEach(function (att) {
+        if (!isForwardable_(att)) return;
+        props.setProperty(attKey_(msg, att), 'seed');
+        n++;
+      });
+    });
+  });
+  Logger.log('Seeded %s existing attachment(s) as already-processed. Send a NEW email to test.', n);
+}
+
+/** Wipe the processed-attachment record so the next run re-forwards everything it sees. */
+function resetProcessed() {
+  var props = PropertiesService.getScriptProperties();
+  var n = 0;
+  props.getKeys().forEach(function (k) {
+    if (k.indexOf('att_') === 0) { props.deleteProperty(k); n++; }
+  });
+  Logger.log('Cleared %s processed-attachment record(s). Next run re-forwards what it sees.', n);
 }
 
 /** Create the labels (run once, grants permissions). */
