@@ -98,9 +98,6 @@ final class XeroApiClient implements XeroClientInterface
                 }
                 $currency = (string)($inv['CurrencyCode'] ?? '');
                 $total    = isset($inv['Total']) ? (float)$inv['Total'] : null;
-                // Xero's CurrencyRate on a bill = base-currency units per 1 unit of
-                // the bill's currency, so base amount = Total × rate (rate is 1 when
-                // the bill is already in the org's currency).
                 $rate     = isset($inv['CurrencyRate']) ? (float)$inv['CurrencyRate'] : 1.0;
                 if ($rate <= 0) $rate = 1.0;
                 $bills[] = [
@@ -114,7 +111,7 @@ final class XeroApiClient implements XeroClientInterface
                     'currency'       => $currency,
                     'currency_rate'  => $rate,
                     'base_currency'  => $baseCurrency !== '' ? $baseCurrency : $currency,
-                    'base_total'     => $total === null ? null : round($total * $rate, 2),
+                    'base_total'     => self::baseAmount($total, $rate),
                     'description'    => trim(implode(' | ', array_filter($descs))),
                 ];
             }
@@ -130,6 +127,19 @@ final class XeroApiClient implements XeroClientInterface
      * a bill with no readable lines just stays in review, it never blocks the pull.
      * @return string[]
      */
+    /**
+     * Convert a bill's own-currency total into the org base currency. Xero quotes
+     * CurrencyRate as units of the BILL'S currency per 1 unit of the base currency
+     * (e.g. a USD bill in an MYR org has rate ≈ 0.25 = USD per MYR), so the base
+     * amount is total / rate. Rate 1 (bill already in base) leaves it unchanged.
+     */
+    public static function baseAmount(?float $total, float $rate): ?float
+    {
+        if ($total === null) return null;
+        if ($rate <= 0) $rate = 1.0;
+        return round($total / $rate, 2);
+    }
+
     /**
      * The connected org's base currency (e.g. MYR). Foreign bills are converted
      * into this. Returns '' if it can't be read — the caller then falls back to

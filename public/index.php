@@ -712,8 +712,9 @@ function render_bills(bool $connected, string $tenant, string $tenantId): void {
                 echo e($b['currency'].' '.number_format((float)$b['total'],2));
                 $bc = (string)($b['base_currency'] ?? '');
                 if ($bc !== '' && $bc !== (string)$b['currency'] && ($b['base_total'] ?? null) !== null):
-                    $rate = rtrim(rtrim(number_format((float)$b['currency_rate'], 5), '0'), '.'); ?>
-                    <div class="muted small" title="Converted to <?= e($bc) ?> at Xero rate <?= e($rate) ?>">→ <?= e($bc.' '.number_format((float)$b['base_total'],2)) ?></div>
+                    $eff = (float)$b['total'] != 0.0 ? (float)$b['base_total'] / (float)$b['total'] : 0.0;
+                    $effr = rtrim(rtrim(number_format($eff, 4), '0'), '.'); ?>
+                    <div class="muted small" title="1 <?= e((string)$b['currency']) ?> = <?= e($effr) ?> <?= e($bc) ?>">→ <?= e($bc.' '.number_format((float)$b['base_total'],2)) ?></div>
                 <?php endif;
               endif; ?></td>
             <td class="mono" style="font-size:12px"><?= e($ex ?: '—') ?></td>

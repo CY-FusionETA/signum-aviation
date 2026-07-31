@@ -200,6 +200,15 @@ check('  → recharge sums the converted (base) amounts', number_format($bfx['su
 check('  → line amount uses base_total not the foreign total', $bfx['lines'][0]['UnitAmount'], 4700.0);
 check('  → mixed source currencies now buildable via base', $bfx['buildable'], true);
 
+// Currency direction: Xero's CurrencyRate is bill-currency units per 1 base unit,
+// so base = total / rate. A USD bill in an MYR org (rate < 1) → a LARGER MYR value.
+$XA = '\App\Service\Xero\XeroApiClient';
+check('base = total / rate (USD 100 @ 0.25 → MYR 400)', $XA::baseAmount(100.0, 0.25), 400.0);
+check('  → base is larger than foreign when rate < 1', $XA::baseAmount(27506.98, 0.25) > 27506.98, true);
+check('base bill (rate 1) unchanged', $XA::baseAmount(3200.0, 1.0), 3200.0);
+check('zero/blank rate treated as 1 (no divide-by-zero)', $XA::baseAmount(100.0, 0.0), 100.0);
+check('null total stays null', $XA::baseAmount(null, 0.25), null);
+
 check('invoice reference format', $IB::reference(['aircraft'=>'MAL191','end_date'=>'2026-03-30','trip_number'=>'99751']), 'MAL191 2026-03-30 99751');
 
 // readyTrips picks up a trip once its bill is tagged
