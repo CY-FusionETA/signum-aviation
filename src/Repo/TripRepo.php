@@ -48,33 +48,13 @@ final class TripRepo
         return [self::find((string)$trip['trip_number'], $entity), true];
     }
 
-    public static function markSynced(int $id, string $tenantId, string $xeroPoId, string $xeroPoNumber): void
-    {
-        Db::q(
-            "UPDATE leon_trips
-                SET tenant_id=?, xero_po_id=?, xero_po_number=?, xero_synced_at=CURRENT_TIMESTAMP,
-                    xero_last_error=NULL, updated_at=CURRENT_TIMESTAMP
-              WHERE id=?",
-            [$tenantId, $xeroPoId, $xeroPoNumber, $id]
-        );
-    }
-
-    public static function markError(int $id, string $error): void
-    {
-        Db::q("UPDATE leon_trips SET xero_last_error=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", [$error, $id]);
-    }
-
     /** Full master list, newest trips first. */
     public static function all(): array
     {
         return Db::all("SELECT * FROM leon_trips ORDER BY start_date DESC, trip_number DESC");
     }
 
-    /**
-     * Remove trips from the master list by id. Local only — a draft PO already
-     * created in Xero is NOT deleted (void it in Xero if you want it gone).
-     * Returns the number of rows removed.
-     */
+    /** Remove trips from the master list by id (local only). Returns rows removed. */
     public static function deleteIds(array $ids): int
     {
         $ids = array_values(array_filter(array_map('intval', $ids)));
@@ -87,11 +67,5 @@ final class TripRepo
     public static function deleteAll(): int
     {
         return Db::q("DELETE FROM leon_trips")->rowCount();
-    }
-
-    /** Does this trip already have a PO in the given (current) tenant? */
-    public static function hasPoInTenant(array $trip, string $tenantId): bool
-    {
-        return $tenantId !== '' && !empty($trip['xero_po_id']) && (string)$trip['tenant_id'] === $tenantId;
     }
 }

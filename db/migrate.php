@@ -9,4 +9,24 @@ $sql = file_get_contents(__DIR__ . '/schema.sql');
 if ($sql === false) { fwrite(STDERR, "Cannot read schema.sql\n"); exit(1); }
 
 Db::conn()->exec($sql);
+
+// Add columns to tables that already exist (CREATE TABLE IF NOT EXISTS won't).
+// Safe to re-run: only columns that are missing get added.
+$add = [
+    'xero_bills' => [
+        'currency_rate' => 'REAL',
+        'base_currency' => 'TEXT',
+        'base_total'    => 'REAL',
+    ],
+];
+foreach ($add as $table => $cols) {
+    $have = array_column(Db::all("PRAGMA table_info({$table})"), 'name');
+    foreach ($cols as $name => $type) {
+        if (!in_array($name, $have, true)) {
+            Db::conn()->exec("ALTER TABLE {$table} ADD COLUMN {$name} {$type}");
+            echo "  + {$table}.{$name}\n";
+        }
+    }
+}
+
 echo "Migrated: " . (cfg('db.path') ?: (STORAGE_ROOT . '/skyledger.sqlite')) . "\n";

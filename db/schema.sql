@@ -63,8 +63,11 @@ CREATE TABLE IF NOT EXISTS xero_bills (
   supplier            TEXT,
   bill_date           TEXT,               -- ISO yyyy-mm-dd
   reference           TEXT,
-  total               REAL,
-  currency            TEXT,
+  total               REAL,               -- amount in the bill's own currency
+  currency            TEXT,               -- the bill's currency code
+  currency_rate       REAL,               -- Xero rate: base units per 1 bill-currency unit
+  base_currency       TEXT,               -- org base currency (e.g. MYR)
+  base_total          REAL,               -- total converted into base currency
   description         TEXT,               -- concatenated line descriptions
   ex_airport          TEXT,               -- extracted ICAO
   ex_date             TEXT,               -- extracted service date (ISO)

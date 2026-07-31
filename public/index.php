@@ -14,6 +14,7 @@ use App\Repo\BillRepo;
 use App\Service\Leon\LeonProcessor;
 use App\Service\Bills\BillReconciler;
 use App\Service\Invoices\InvoiceService;
+use App\Service\Invoices\CompletenessChecker;
 use App\Service\Xero\XeroOAuth;
 
 session_start();
@@ -149,7 +150,7 @@ if ($path === '/import' && $method === 'POST') {
         }
     }
     if ($tot['files']) {
-        $_SESSION['flash_ok'] = "Imported {$tot['files']} file(s) · {$tot['parsed']} trips ({$tot['new']} new, {$tot['updated']} updated). Select trips below and create draft POs.";
+        $_SESSION['flash_ok'] = "Imported {$tot['files']} file(s) · {$tot['parsed']} trips ({$tot['new']} new, {$tot['updated']} updated) into the master list.";
     }
     if ($errs)                       $_SESSION['flash_err'] = implode(' · ', $errs);
     if (!$tot['files'] && !$errs)    $_SESSION['flash_err'] = 'No valid files were uploaded.';
@@ -169,16 +170,6 @@ if ($path === '/trips/delete' && $method === 'POST') {
     $n = TripRepo::deleteIds($ids);
     $_SESSION['flash_ok'] = $n === 1 ? '1 trip removed from the master list.' : "{$n} trips removed from the master list.";
     redirect('/?view=trips');
-}
-
-// --- create draft POs for selected trips ----------------------------
-$result = null;
-if ($path === '/create-pos' && $method === 'POST') {
-    csrf_check();
-    $ids = array_map('intval', (array)($_POST['trip_ids'] ?? []));
-    if (!$ids) { $_SESSION['flash_err'] = 'Tick at least one trip first.'; redirect('/?view=trips'); }
-    $dryRun = isset($_POST['dry_run']) || !XeroOAuth::isConnected();
-    $result = LeonProcessor::createPosForIds($ids, $dryRun);
 }
 
 // --- Module 3: reconcile supplier bills against trips ---------------
@@ -226,9 +217,8 @@ if ($path === '/invoices/create' && $method === 'POST') {
     redirect('/?view=invoices');
 }
 
-$view = $result !== null ? 'trips'
-      : (in_array($_GET['view'] ?? '', ['dashboard', 'trips', 'bills', 'invoices', 'settings'], true) ? $_GET['view'] : 'dashboard');
-render_home($result, $view);
+$view = in_array($_GET['view'] ?? '', ['dashboard', 'trips', 'bills', 'invoices', 'settings'], true) ? $_GET['view'] : 'dashboard';
+render_home($view);
 
 // ====================================================================
 //  Views
@@ -288,7 +278,7 @@ function render_login(): void {
     </div></body></html><?php
 }
 
-function render_home(?array $result, string $view): void {
+function render_home(string $view): void {
     $ok = $_SESSION['flash_ok'] ?? ''; $err = $_SESSION['flash_err'] ?? '';
     unset($_SESSION['flash_ok'], $_SESSION['flash_err']);
     $connected = XeroOAuth::isConnected();
@@ -296,15 +286,28 @@ function render_home(?array $result, string $view): void {
     $tenantId = $connected ? (string)(XeroOAuth::token()['tenant_id'] ?? '') : '';
 
     $trips = TripRepo::all();
+
+    // Group linked supplier bills by trip so each row can show whether it's
+    // matched to a bill and whether every route leg is costed.
+    $billsByTrip = [];
+    if ($connected) {
+        foreach (BillRepo::allForTenant($tenantId) as $b) {
+            if (!in_array((string)$b['match_status'], ['matched', 'tagged'], true)) continue;
+            $tid = (int)$b['matched_trip_id'];
+            if ($tid) $billsByTrip[$tid][] = $b;
+        }
+    }
+
     $js = [];
-    $stat = ['total' => count($trips), 'created' => 0, 'pending' => 0, 'inc' => 0, 'ltd' => 0, 'failed' => 0];
+    $stat = ['total' => count($trips), 'matched' => 0, 'ready' => 0, 'inc' => 0, 'ltd' => 0];
     foreach ($trips as $t) {
-        $has   = TripRepo::hasPoInTenant($t, $tenantId);
-        $other = !$has && !empty($t['xero_po_id']);
-        $status = $has ? 'created' : ($other ? 'other' : 'new');
-        if ($has) $stat['created']++; else $stat['pending']++;
+        $tbills = $billsByTrip[(int)$t['id']] ?? [];
+        $count  = count($tbills);
+        $cp     = CompletenessChecker::check($t, $tbills);
+        $cost   = $count === 0 ? 'none' : ($cp['status'] === 'complete' ? 'ready' : 'partial');
+        if ($count > 0)      $stat['matched']++;
+        if ($cost === 'ready') $stat['ready']++;
         if (($t['entity'] ?? '') === 'inc') $stat['inc']++; else $stat['ltd']++;
-        if (!empty($t['xero_last_error'])) $stat['failed']++;
         $js[] = [
             'id' => (int)$t['id'], 'entity' => strtoupper((string)$t['entity']),
             'trip' => (string)$t['trip_number'], 'client' => (string)$t['client_name'],
@@ -312,9 +315,9 @@ function render_home(?array $result, string $view): void {
             'start' => (string)$t['start_date'], 'end' => (string)$t['end_date'],
             'flights' => $t['flights_count'] === null ? '' : (int)$t['flights_count'],
             'currency' => (string)$t['currency'], 'source' => (string)$t['source_file'],
-            'status' => $status, 'has' => $has,
-            'po_number' => (string)($t['xero_po_number'] ?? ''), 'po_id' => (string)($t['xero_po_id'] ?? ''),
-            'synced' => (string)($t['xero_synced_at'] ?? ''), 'error' => (string)($t['xero_last_error'] ?? ''),
+            'bills' => $count, 'cost' => $cost,
+            'legs' => (int)$cp['legs'], 'covered' => count($cp['covered']),
+            'missing' => implode(', ', $cp['missing']),
             'created' => (string)($t['created_at'] ?? ''), 'updated' => (string)($t['updated_at'] ?? ''),
         ];
     }
@@ -351,11 +354,11 @@ function render_home(?array $result, string $view): void {
         <?php if ($ok): ?><div class="alert ok"><?= e($ok) ?></div><?php endif; ?>
         <?php if ($err): ?><div class="alert err"><?= e($err) ?></div><?php endif; ?>
         <?php
-          if ($view === 'trips')         render_trips($trips, $connected, $tenant, $result);
+          if ($view === 'trips')         render_trips($trips, $connected, $tenant);
           elseif ($view === 'bills')     render_bills($connected, $tenant, $tenantId);
           elseif ($view === 'invoices')  render_invoices($connected, $tenant, $tenantId);
           elseif ($view === 'settings')  render_settings($connected, $tenant);
-          else                           render_dashboard($stat, $trips, $connected, $tenant);
+          else                           render_dashboard($stat, $js, $connected, $tenant);
         ?>
       </main>
     </div>
@@ -378,28 +381,29 @@ function render_home(?array $result, string $view): void {
     </body></html><?php
 }
 
-function render_dashboard(array $stat, array $trips, bool $connected, string $tenant): void {
-    $recent = array_slice($trips, 0, 8);
+function render_dashboard(array $stat, array $rows, bool $connected, string $tenant): void {
+    $recent = array_slice($rows, 0, 8);
+    $costPill = fn(string $c) => $c === 'ready'
+        ? '<span class="pill green">Ready</span>'
+        : ($c === 'partial' ? '<span class="pill amber">Partial</span>' : '<span class="pill gray">None</span>');
     ?>
     <p class="lede">Every trip, its supplier bills and its billing status — in one place. Data flows in from <b>LEON</b>, <b>Gmail</b> and <b>Xero</b>; nothing re-keyed.</p>
 
     <section class="tiles">
       <div class="tile"><div class="tnum"><?= $stat['total'] ?></div><div class="tlbl">Trips in master list</div></div>
-      <div class="tile"><div class="tnum green"><?= $stat['created'] ?></div><div class="tlbl">POs created<?= $connected ? ' · '.e($tenant) : '' ?></div></div>
-      <div class="tile"><div class="tnum amber"><?= $stat['pending'] ?></div><div class="tlbl">Pending POs</div></div>
+      <div class="tile"><div class="tnum blue"><?= $stat['matched'] ?></div><div class="tlbl">Matched to bills<?= $connected ? ' · '.e($tenant) : '' ?></div></div>
+      <div class="tile"><div class="tnum green"><?= $stat['ready'] ?></div><div class="tlbl">Ready to invoice</div></div>
       <div class="tile"><div class="tnum"><?= $stat['inc'] ?> <span class="tmini">Inc</span> / <?= $stat['ltd'] ?> <span class="tmini">Ltd</span></div><div class="tlbl">By entity</div></div>
     </section>
 
     <section class="card">
-      <div class="chead"><h2>Billing pipeline</h2><span class="muted">trip → PO → supplier bill → client invoice</span></div>
+      <div class="chead"><h2>Billing pipeline</h2><span class="muted">trip → supplier bill → client invoice</span></div>
       <div class="pipe">
         <div class="pstep"><div class="pn"><?= $stat['total'] ?></div><div class="pl">Trips</div></div>
         <div class="parrow">→</div>
-        <div class="pstep"><div class="pn green"><?= $stat['created'] ?></div><div class="pl">Draft POs</div></div>
+        <div class="pstep"><div class="pn blue"><?= $stat['matched'] ?></div><div class="pl">Matched to bills</div></div>
         <div class="parrow">→</div>
-        <div class="pstep soon"><div class="pn">—</div><div class="pl">Bills matched <span class="soontag">soon</span></div></div>
-        <div class="parrow">→</div>
-        <div class="pstep soon"><div class="pn">—</div><div class="pl">Invoiced <span class="soontag">soon</span></div></div>
+        <div class="pstep"><div class="pn green"><?= $stat['ready'] ?></div><div class="pl">Ready to invoice</div></div>
       </div>
     </section>
 
@@ -410,12 +414,12 @@ function render_dashboard(array $stat, array $trips, bool $connected, string $te
           <div class="empty">No trips yet. Go to <a href="<?= e(base()) ?>/?view=trips">Trips</a> to import a LEON export.</div>
         <?php else: ?>
         <div class="tablewrap short">
-          <table class="grid"><thead><tr><th>Trip</th><th>Client</th><th>Aircraft</th><th>PO status</th></tr></thead><tbody>
-          <?php foreach ($recent as $t):
-              $st = !empty($t['xero_po_id']) ? 'created' : 'new';
-          ?>
-            <tr><td class="mono"><?= e($t['trip_number']) ?></td><td><?= e($t['client_name'] ?: '—') ?></td>
-                <td class="mono"><?= e($t['aircraft']) ?></td><td><?= pill($st) ?></td></tr>
+          <table class="grid"><thead><tr><th>Trip</th><th>Client</th><th>Aircraft</th><th>Bills</th><th>Costing</th></tr></thead><tbody>
+          <?php foreach ($recent as $t): ?>
+            <tr><td class="mono"><?= e($t['trip']) ?></td><td><?= e($t['client'] ?: '—') ?></td>
+                <td class="mono"><?= e($t['aircraft']) ?></td>
+                <td><?= $t['bills'] > 0 ? '<span class="pill blue">'.(int)$t['bills'].'</span>' : '<span class="muted">—</span>' ?></td>
+                <td><?= $costPill((string)$t['cost']) ?></td></tr>
           <?php endforeach; ?>
           </tbody></table>
         </div>
@@ -427,7 +431,7 @@ function render_dashboard(array $stat, array $trips, bool $connected, string $te
           <div class="chead"><h2>Xero connection</h2></div>
           <div class="banner <?= $connected ? 'on' : 'off' ?>" style="margin:0">
             <div class="binfo"><span class="dot"></span>
-              <div><?= $connected ? '<b>Connected to '.e($tenant).'</b>' : '<b>Not connected</b><span class="muted"> · POs dry-run only</span>' ?></div>
+              <div><?= $connected ? '<b>Connected to '.e($tenant).'</b>' : '<b>Not connected</b><span class="muted"> · connect to match bills</span>' ?></div>
             </div>
             <div class="bactions">
               <?php if ($connected): ?><a class="btn ghost sm" href="<?= e(base()) ?>/?view=settings">Manage</a>
@@ -446,12 +450,12 @@ function render_dashboard(array $stat, array $trips, bool $connected, string $te
     <?php
 }
 
-function render_trips(array $trips, bool $connected, string $tenant, ?array $result): void {
+function render_trips(array $trips, bool $connected, string $tenant): void {
     ?>
     <div class="banner <?= $connected ? 'on' : 'off' ?>">
       <div class="binfo"><span class="dot"></span>
-        <?php if ($connected): ?><div><b>Connected to <?= e($tenant) ?></b><span class="muted"> · draft POs create here</span></div>
-        <?php else: ?><div><b>Not connected to Xero</b><span class="muted"> · creating POs will dry-run only</span></div><?php endif; ?>
+        <?php if ($connected): ?><div><b>Connected to <?= e($tenant) ?></b><span class="muted"> · bills read from this org</span></div>
+        <?php else: ?><div><b>Not connected to Xero</b><span class="muted"> · connect an org to match bills</span></div><?php endif; ?>
       </div>
       <div class="bactions">
         <?php if ($connected): ?><a class="btn ghost sm" href="<?= e(base()) ?>/xero/connect">Switch org</a>
@@ -489,16 +493,14 @@ function render_trips(array $trips, bool $connected, string $tenant, ?array $res
       <?php if (!$trips): ?>
         <div class="empty">No trips yet. Import a LEON CSV, XLSX or PDF above to build the master list.</div>
       <?php else: ?>
-      <form method="post" action="<?= e(base()) ?>/create-pos" id="poform">
+      <form method="post" action="<?= e(base()) ?>/trips/delete" id="poform">
         <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>">
         <div class="toolbar">
           <input type="search" id="q" class="search" placeholder="Search trip, client, aircraft, route…">
           <select id="fEntity" class="fsel"><option value="">All entities</option><option value="INC">Inc</option><option value="LTD">Ltd</option></select>
-          <select id="fStatus" class="fsel"><option value="">All statuses</option><option value="new">No PO yet</option><option value="created">PO created</option><option value="other">PO in other org</option></select>
+          <select id="fStatus" class="fsel"><option value="">All trips</option><option value="matched">Matched</option><option value="unmatched">Not matched</option><option value="ready">Ready to invoice</option><option value="partial">Partly costed</option></select>
           <span class="spacer"></span>
-          <label class="chk"><input type="checkbox" name="dry_run" <?= $connected ? '' : 'checked disabled' ?>> Dry run</label>
-          <button class="btn danger" type="submit" id="delsel" formaction="<?= e(base()) ?>/trips/delete" formnovalidate>Delete selected</button>
-          <button class="btn primary" type="submit"><span id="selcount">0</span> selected · Create draft POs</button>
+          <button class="btn danger" type="submit" id="delsel" formnovalidate><span id="selcount">0</span> selected · Delete</button>
         </div>
         <div class="tablewrap">
         <table class="grid">
@@ -511,7 +513,8 @@ function render_trips(array $trips, bool $connected, string $tenant, ?array $res
             <th data-key="route">Route</th>
             <th data-key="start" class="sortable">Dates</th>
             <th data-key="flights" class="sortable num">Flts</th>
-            <th data-key="status" class="sortable">PO status</th>
+            <th data-key="bills" class="sortable">Bills</th>
+            <th data-key="cost" class="sortable">Costing</th>
             <th class="actcol"></th>
           </tr></thead>
           <tbody id="rows"></tbody>
@@ -520,8 +523,6 @@ function render_trips(array $trips, bool $connected, string $tenant, ?array $res
       </form>
       <?php endif; ?>
     </section>
-
-    <?php if ($result !== null) render_result($result); ?>
     <?php
 }
 
@@ -689,7 +690,14 @@ function render_bills(bool $connected, string $tenant, string $tenantId): void {
             <td><?= e($b['supplier'] ?: '—') ?><?php if ($b['description']): ?><div class="billdesc" title="<?= e($b['description']) ?>"><?= e(mb_strimwidth((string)$b['description'], 0, 64, '…')) ?></div><?php endif; ?></td>
             <td class="mono" title="<?= e($b['description']) ?>"><?= e($b['invoice_number'] ?: substr((string)$b['xero_invoice_id'],0,8)) ?></td>
             <td class="nowrap"><?= e($b['bill_date']) ?></td>
-            <td class="num"><?= $b['total']!==null ? e($b['currency'].' '.number_format((float)$b['total'],2)) : '' ?></td>
+            <td class="num"><?php if ($b['total']!==null):
+                echo e($b['currency'].' '.number_format((float)$b['total'],2));
+                $bc = (string)($b['base_currency'] ?? '');
+                if ($bc !== '' && $bc !== (string)$b['currency'] && ($b['base_total'] ?? null) !== null):
+                    $rate = rtrim(rtrim(number_format((float)$b['currency_rate'], 5), '0'), '.'); ?>
+                    <div class="muted small" title="Converted to <?= e($bc) ?> at Xero rate <?= e($rate) ?>">→ <?= e($bc.' '.number_format((float)$b['base_total'],2)) ?></div>
+                <?php endif;
+              endif; ?></td>
             <td class="mono" style="font-size:12px"><?= e($ex ?: '—') ?></td>
             <td><?php if ($b['matched_trip_number']): ?><span class="mono"><?= e($b['matched_trip_number']) ?></span> <span class="muted">→ <?= e($b['matched_client'] ?: 'no client') ?></span><?php else: ?><span class="muted">—</span><?php endif; ?></td>
             <td><?= $bpill((string)$b['match_status']) ?><?= !empty($b['xero_last_error']) ? ' <span class="warnmark" title="'.e($b['xero_last_error']).'">!</span>' : '' ?></td>
@@ -715,31 +723,6 @@ function render_bills(bool $connected, string $tenant, string $tenantId): void {
       <?php endif; ?>
     </section>
     <?php
-}
-
-function render_result(array $result): void {
-    $s = $result['summary'];
-    echo '<section class="card"><div class="chead"><h2>Result</h2><span class="muted">Org: '
-       . e($result['tenant'] !== '' ? $result['tenant'] : '(dry run — not connected)') . '</span></div>';
-    echo '<div class="reschips">'
-       . '<span class="chip">selected ' . $s['selected'] . '</span>'
-       . '<span class="chip green">created ' . $s['created'] . '</span>'
-       . '<span class="chip amber">skipped ' . $s['skipped'] . '</span>'
-       . '<span class="chip red">failed ' . $s['failed'] . '</span>'
-       . '<span class="chip blue">dry-run ' . $s['dry_run'] . '</span></div>';
-    echo '<div class="tablewrap"><table class="grid"><thead><tr><th>Status</th><th>Trip</th><th>Client</th><th>Message</th></tr></thead><tbody>';
-    foreach ($result['rows'] as $r) {
-        echo '<tr><td>' . pill($r['status']) . '</td><td>' . e($r['trip_number'])
-           . '</td><td>' . e($r['client_name'] ?: '—') . '</td><td>' . e($r['message']) . '</td></tr>';
-    }
-    echo '</tbody></table></div></section>';
-}
-
-function pill(string $status): string {
-    $map = ['created'=>['green','Created'], 'dry_run'=>['blue','Dry run'], 'skipped'=>['amber','Skipped'],
-            'failed'=>['red','Failed'], 'new'=>['gray','No PO'], 'other'=>['amber','Other org']];
-    [$c, $t] = $map[$status] ?? ['gray', ucfirst($status)];
-    return '<span class="pill ' . $c . '">' . e($t) . '</span>';
 }
 
 function dz_js(): string {
@@ -770,7 +753,8 @@ function app_js(): string {
     return <<<'JS'
 const $ = s => document.querySelector(s);
 const rowsEl = $('#rows'); if (!rowsEl) { /* not on trips view */ } else {
-  const PILL = {new:['gray','No PO'], created:['green','Created'], other:['amber','Other org']};
+  const COST = {ready:['green','Ready'], partial:['amber','Partial'], none:['gray','None']};
+  const COSTRANK = {none:0, partial:1, ready:2};
   const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
   const selected = new Set();
   let sortKey = 'start', sortDir = -1;
@@ -780,23 +764,40 @@ const rowsEl = $('#rows'); if (!rowsEl) { /* not on trips view */ } else {
     const q = $('#q').value.trim().toLowerCase();
     const fe = $('#fEntity').value, fs = $('#fStatus').value;
     if (fe && t.entity !== fe) return false;
-    if (fs && t.status !== fs) return false;
+    if (fs === 'matched'   && !(t.bills > 0)) return false;
+    if (fs === 'unmatched' && t.bills > 0)    return false;
+    if (fs === 'ready'     && t.cost !== 'ready')   return false;
+    if (fs === 'partial'   && t.cost !== 'partial') return false;
     if (q){ const hay = `${t.trip} ${t.client} ${t.aircraft} ${t.route} ${t.entity}`.toLowerCase(); if (!hay.includes(q)) return false; }
     return true;
   }
-  function sortVal(t){ let v = t[sortKey]; if (sortKey==='flights') return v===''?-1:+v; return String(v).toLowerCase(); }
+  function sortVal(t){
+    if (sortKey==='flights') return t.flights===''?-1:+t.flights;
+    if (sortKey==='bills')   return +t.bills;
+    if (sortKey==='cost')    return COSTRANK[t.cost] ?? -1;
+    return String(t[sortKey]).toLowerCase();
+  }
+
+  function billsCell(t){
+    return t.bills > 0
+      ? `<span class="pill blue" title="${t.bills} supplier bill(s) tagged to this trip">${t.bills} bill${t.bills>1?'s':''}</span>`
+      : `<span class="muted">Not matched</span>`;
+  }
+  function costCell(t){
+    const [c,l] = COST[t.cost] || ['gray','None'];
+    const tip = t.cost==='partial' && t.missing ? ` title="No bill yet at: ${esc(t.missing)}"` : (t.cost==='ready' ? ' title="Every route leg has a bill"' : '');
+    const legs = t.legs>0 ? ` <span class="muted small">${t.covered}/${t.legs}</span>` : '';
+    return `<span class="pill ${c}"${tip}>${esc(l)}</span>${legs}`;
+  }
 
   function render(){
     const list = TRIPS.filter(matches).sort((a,b)=>{
       const x=sortVal(a), y=sortVal(b); return (x<y?-1:x>y?1:0)*sortDir;
     });
     rowsEl.innerHTML = list.map(t => {
-      const [c,l] = PILL[t.status] || ['gray', t.status];
-      const err = t.error ? ` <span class="warnmark" title="${esc(t.error)}">!</span>` : '';
       const ck = selected.has(t.id) ? 'checked' : '';
-      const dis = t.has ? 'disabled title="Already has a PO in this org"' : '';
       return `<tr data-id="${t.id}">
-        <td class="cbcol"><input type="checkbox" class="pick" ${ck} ${dis}></td>
+        <td class="cbcol"><input type="checkbox" class="pick" ${ck}></td>
         <td><span class="tagpill">${esc(t.entity)}</span></td>
         <td class="mono">${esc(t.trip)}</td>
         <td>${esc(t.client||'—')}</td>
@@ -804,7 +805,8 @@ const rowsEl = $('#rows'); if (!rowsEl) { /* not on trips view */ } else {
         <td class="route" title="${esc(t.route)}">${esc(t.route)}</td>
         <td class="nowrap">${esc(dates(t))}</td>
         <td class="num">${t.flights===''?'':t.flights}</td>
-        <td><span class="pill ${c}">${esc(l)}</span>${err}</td>
+        <td class="nowrap">${billsCell(t)}</td>
+        <td class="nowrap">${costCell(t)}</td>
         <td class="actcol"><button type="button" class="del" title="Delete this trip from the master list" aria-label="Delete trip ${esc(t.trip)}">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
         </button></td>
@@ -813,26 +815,23 @@ const rowsEl = $('#rows'); if (!rowsEl) { /* not on trips view */ } else {
     $('#count').textContent = `${list.length} of ${TRIPS.length} trips`;
     updateSel();
     const allBox = $('#all');
-    const shown = list.filter(t=>!t.has);
-    allBox.checked = shown.length>0 && shown.every(t=>selected.has(t.id));
+    allBox.checked = list.length>0 && list.every(t=>selected.has(t.id));
   }
   function updateSel(){ $('#selcount').textContent = selected.size; }
 
   $('#poform').addEventListener('submit', e => {
-    const isDelete = e.submitter && e.submitter.id === 'delsel';
     $('#poform').querySelectorAll('input[data-sel]').forEach(n=>n.remove());
     selected.forEach(id => {
       const i=document.createElement('input'); i.type='hidden'; i.name='trip_ids[]'; i.value=id; i.dataset.sel='1';
       $('#poform').appendChild(i);
     });
-    if (selected.size===0){ e.preventDefault(); alert(isDelete ? 'Tick at least one trip to delete.' : 'Tick at least one trip first.'); return; }
-    if (isDelete && !confirm(`Delete ${selected.size} trip(s) from the master list?\n\nThis only removes them here — any draft PO already created in Xero stays.`)) e.preventDefault();
+    if (selected.size===0){ e.preventDefault(); alert('Tick at least one trip to delete.'); return; }
+    if (!confirm(`Delete ${selected.size} trip(s) from the master list?\n\nThis only removes them here — nothing in Xero is touched.`)) e.preventDefault();
   });
 
   function deleteTrip(id){
     const t = TRIPS.find(x=>x.id===id); if(!t) return;
-    const extra = t.has ? `\n\nIts draft PO ${t.po_number||t.po_id} stays in Xero — void it there if you want it gone.` : '';
-    if (!confirm(`Delete trip ${t.trip} (${t.client||'no client'}) from the master list?${extra}`)) return;
+    if (!confirm(`Delete trip ${t.trip} (${t.client||'no client'}) from the master list?\n\nThis only removes it here — nothing in Xero is touched.`)) return;
     const f=document.createElement('form'); f.method='post'; f.action=BASE+'/trips/delete';
     f.innerHTML = `<input type="hidden" name="csrf" value="${esc(CSRF)}"><input type="hidden" name="trip_ids[]" value="${id}">`;
     document.body.appendChild(f); f.submit();
@@ -851,7 +850,7 @@ const rowsEl = $('#rows'); if (!rowsEl) { /* not on trips view */ } else {
     openModal(+tr.dataset.id);
   });
   $('#all').addEventListener('change', e => {
-    TRIPS.filter(matches).filter(t=>!t.has).forEach(t=> e.target.checked ? selected.add(t.id) : selected.delete(t.id));
+    TRIPS.filter(matches).forEach(t=> e.target.checked ? selected.add(t.id) : selected.delete(t.id));
     render();
   });
   ['input','change'].forEach(ev=>{ $('#q').addEventListener(ev,render); });
@@ -867,17 +866,15 @@ const rowsEl = $('#rows'); if (!rowsEl) { /* not on trips view */ } else {
     const t = TRIPS.find(x=>x.id===id); if(!t) return;
     $('#mtitle').innerHTML = `Trip ${esc(t.trip)} <span class="tagpill">${esc(t.entity)}</span>`;
     const legs = (t.route||'').split(' - ').filter(Boolean).map(a=>`<span class="leg">${esc(a)}</span>`).join('<span class="arr">→</span>');
-    const [c,l] = PILL[t.status] || ['gray',t.status];
-    let po = `<span class="pill ${c}">${esc(l)}</span>`;
-    if (t.po_number || t.po_id) po += ` <span class="mono">${esc(t.po_number||t.po_id)}</span>`;
+    const [c,l] = COST[t.cost] || ['gray','None'];
+    const cover = t.legs>0 ? ` <span class="mono">${t.covered}/${t.legs} legs</span>` : '';
     $('#mbody').innerHTML =
       `<div class="legs">${legs||'—'}</div>` +
       row('Client', t.client||'—') + row('Aircraft', t.aircraft) +
       row('Dates', dates(t)) + row('Flights', t.flights) +
-      row('Currency', t.currency || 'org base') +
-      `<div class="drow"><span>PO status</span><b>${po}</b></div>` +
-      row('PO number', t.po_number) + row('Xero PO ID', t.po_id) +
-      row('Synced at', t.synced) + (t.error?`<div class="drow err"><span>Last error</span><b>${esc(t.error)}</b></div>`:'') +
+      `<div class="drow"><span>Bills matched</span><b>${t.bills>0 ? t.bills : '—'}</b></div>` +
+      `<div class="drow"><span>Costing</span><b><span class="pill ${c}">${esc(l)}</span>${cover}</b></div>` +
+      (t.cost==='partial' && t.missing ? `<div class="drow"><span>Missing a bill at</span><b>${esc(t.missing)}</b></div>` : '') +
       row('Source file', t.source) + row('Imported', t.created) + row('Updated', t.updated) +
       `<div class="mfoot"><button type="button" class="btn danger sm" id="mdel">Delete from master list</button></div>`;
     $('#mdel').addEventListener('click', () => { $('#modal').hidden = true; deleteTrip(t.id); });

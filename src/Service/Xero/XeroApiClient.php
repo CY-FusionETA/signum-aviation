@@ -4,109 +4,18 @@ declare(strict_types=1);
 namespace App\Service\Xero;
 
 /**
- * Live Xero client. Pushes one LEON trip to the connected organisation as a
- * DRAFT Purchase Order. Ported from Starship's XeroApiClient; adapted for
- * trip-metadata-only POs (no priced lines) with the trip's client as the
- * Xero contact. Never throws: on failure returns a null id + 'error' string
- * so a Xero outage never blocks the rest of the batch.
+ * Live Xero client for the connected organisation: read DRAFT supplier bills
+ * (ACCPAY), tag them with a trip number, and raise DRAFT client sales invoices
+ * (ACCREC). Never throws: on failure returns a null id + 'error' string so a
+ * Xero outage never blocks the rest of the batch.
  */
 final class XeroApiClient implements XeroClientInterface
 {
     private const API = 'https://api.xero.com/api.xro/2.0/';
 
-    public function createPurchaseOrder(array $trip): array
-    {
-        try {
-            $auth = XeroOAuth::accessToken();
-            if (!$auth) {
-                return ['xero_po_id' => null, 'xero_po_number' => null, 'stubbed' => false, 'error' => 'Xero is not connected.'];
-            }
-
-            $contactId = $this->ensureContactId($auth, self::contactName($trip));
-            if (!$contactId) {
-                return ['xero_po_id' => null, 'xero_po_number' => null, 'stubbed' => false, 'error' => 'Could not resolve a Xero contact for this trip.'];
-            }
-
-            $order = self::buildOrderPayload($trip);
-            $order['Contact'] = ['ContactID' => $contactId];
-
-            [$code, $body] = XeroOAuth::http('POST', self::API . 'PurchaseOrders', [
-                'Authorization: Bearer ' . $auth['access_token'],
-                'Xero-tenant-id: ' . $auth['tenant_id'],
-                'Accept: application/json',
-                'Content-Type: application/json',
-            ], json_encode(['PurchaseOrders' => [$order]], JSON_UNESCAPED_UNICODE));
-
-            $json    = json_decode($body, true);
-            $created = $json['PurchaseOrders'][0] ?? null;
-            $xeroId  = $created['PurchaseOrderID'] ?? null;
-
-            if ($code < 200 || $code >= 300 || !$xeroId) {
-                return ['xero_po_id' => null, 'xero_po_number' => null, 'stubbed' => false, 'error' => self::extractError($json, $body)];
-            }
-
-            return [
-                'xero_po_id'     => (string)$xeroId,
-                'xero_po_number' => (string)($created['PurchaseOrderNumber'] ?? $order['PurchaseOrderNumber'] ?? ''),
-                'stubbed'        => false,
-            ];
-        } catch (\Throwable $e) {
-            return ['xero_po_id' => null, 'xero_po_number' => null, 'stubbed' => false, 'error' => $e->getMessage()];
-        }
-    }
-
-    /**
-     * Build the Xero PurchaseOrders payload for a trip (minus the Contact, which
-     * the live client resolves to a ContactID). Kept public + pure so the stub
-     * client can show the exact payload in a dry run.
-     */
-    public static function buildOrderPayload(array $trip): array
-    {
-        $route  = (string)($trip['route'] ?? '');
-        $legs   = (int)($trip['flights_count'] ?? 0);
-        $desc   = sprintf(
-            'Trip %s | %s | %s | %s to %s | %d flight(s)',
-            (string)($trip['trip_number'] ?? ''),
-            (string)($trip['aircraft'] ?? '-'),
-            $route !== '' ? $route : '-',
-            (string)($trip['start_date'] ?? '-'),
-            (string)($trip['end_date'] ?? '-'),
-            $legs
-        );
-
-        // A description-only line (no Quantity/UnitAmount) — this is a trip
-        // anchor PO, not a priced order. Xero accepts description-only lines.
-        $lineItems = [['Description' => $desc]];
-
-        $currency = trim((string)($trip['currency'] ?? ''));
-
-        return array_filter([
-            'PurchaseOrderNumber' => (string)($trip['trip_number'] ?? ''),
-            'Date'                => self::iso($trip['start_date'] ?? null),
-            'DeliveryDate'        => self::iso($trip['end_date'] ?? null),
-            'Reference'           => trim(((string)($trip['aircraft'] ?? '')) . ' ' . $route),
-            'CurrencyCode'        => $currency !== '' ? $currency : null,
-            'Status'              => 'DRAFT',
-            'LineItems'           => $lineItems,
-        ], fn($v) => $v !== null && $v !== '' && $v !== []);
-    }
-
-    /** Client is who the trip belongs to; blank client falls back to a placeholder. */
-    public static function contactName(array $trip): string
-    {
-        $c = trim((string)($trip['client_name'] ?? ''));
-        return $c !== '' ? $c : 'Unknown Client (LEON)';
-    }
-
-    private static function iso($d): ?string
-    {
-        $d = trim((string)$d);
-        return $d !== '' ? substr($d, 0, 10) : null;
-    }
-
     /**
      * Resolve a Xero ContactID by name, creating the contact if needed. Xero's
-     * PurchaseOrders endpoint rejects a bare {Name}; it needs a ContactID.
+     * Invoices endpoint rejects a bare {Name}; it needs a ContactID.
      */
     private function ensureContactId(array $auth, string $name): ?string
     {
@@ -175,6 +84,9 @@ final class XeroApiClient implements XeroClientInterface
             if ($code < 200 || $code >= 300) {
                 return ['ok' => false, 'bills' => [], 'error' => self::extractError($json, $body)];
             }
+            // The org's base currency — every foreign bill is converted into it.
+            $baseCurrency = self::orgBaseCurrency($auth);
+
             $bills = [];
             foreach ($json['Invoices'] ?? [] as $inv) {
                 $descs = array_map(fn($l) => (string)($l['Description'] ?? ''), $inv['LineItems'] ?? []);
@@ -183,14 +95,24 @@ final class XeroApiClient implements XeroClientInterface
                 if (!array_filter($descs) && ($id = (string)($inv['InvoiceID'] ?? '')) !== '') {
                     $descs = self::billLineDescriptions($auth, $id);
                 }
+                $currency = (string)($inv['CurrencyCode'] ?? '');
+                $total    = isset($inv['Total']) ? (float)$inv['Total'] : null;
+                // Xero's CurrencyRate on a bill = base-currency units per 1 unit of
+                // the bill's currency, so base amount = Total × rate (rate is 1 when
+                // the bill is already in the org's currency).
+                $rate     = isset($inv['CurrencyRate']) ? (float)$inv['CurrencyRate'] : 1.0;
+                if ($rate <= 0) $rate = 1.0;
                 $bills[] = [
                     'invoice_id'     => (string)($inv['InvoiceID'] ?? ''),
                     'invoice_number' => (string)($inv['InvoiceNumber'] ?? ''),
                     'supplier'       => (string)($inv['Contact']['Name'] ?? ''),
                     'bill_date'      => self::xeroDate($inv['DateString'] ?? ($inv['Date'] ?? '')),
                     'reference'      => (string)($inv['Reference'] ?? ''),
-                    'total'          => isset($inv['Total']) ? (float)$inv['Total'] : null,
-                    'currency'       => (string)($inv['CurrencyCode'] ?? ''),
+                    'total'          => $total,
+                    'currency'       => $currency,
+                    'currency_rate'  => $rate,
+                    'base_currency'  => $baseCurrency !== '' ? $baseCurrency : $currency,
+                    'base_total'     => $total === null ? null : round($total * $rate, 2),
                     'description'    => trim(implode(' | ', array_filter($descs))),
                 ];
             }
@@ -206,6 +128,22 @@ final class XeroApiClient implements XeroClientInterface
      * a bill with no readable lines just stays in review, it never blocks the pull.
      * @return string[]
      */
+    /**
+     * The connected org's base currency (e.g. MYR). Foreign bills are converted
+     * into this. Returns '' if it can't be read — the caller then falls back to
+     * each bill's own currency so nothing breaks.
+     */
+    private static function orgBaseCurrency(array $auth): string
+    {
+        [$code, $body] = XeroOAuth::http('GET', self::API . 'Organisation', [
+            'Authorization: Bearer ' . $auth['access_token'],
+            'Xero-tenant-id: ' . $auth['tenant_id'],
+            'Accept: application/json',
+        ]);
+        if ($code < 200 || $code >= 300) return '';
+        return strtoupper((string)(json_decode($body, true)['Organisations'][0]['BaseCurrency'] ?? ''));
+    }
+
     private static function billLineDescriptions(array $auth, string $invoiceId): array
     {
         [$code, $body] = XeroOAuth::http('GET', self::API . 'Invoices/' . rawurlencode($invoiceId), [

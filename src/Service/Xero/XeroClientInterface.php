@@ -7,13 +7,6 @@ namespace App\Service\Xero;
 interface XeroClientInterface
 {
     /**
-     * Push one LEON trip to Xero as a DRAFT Purchase Order.
-     * @param array $trip A leon_trips row (trip_number, client_name, aircraft, route, dates, currency, ...)
-     * @return array{xero_po_id: ?string, xero_po_number: ?string, stubbed: bool, error?: string, payload?: array}
-     */
-    public function createPurchaseOrder(array $trip): array;
-
-    /**
      * List DRAFT supplier bills (ACCPAY) from the connected org — Module 3 input.
      * @return array{ok:bool, bills:array, tenant_id?:string, error?:string}
      */

@@ -31,9 +31,15 @@ final class InvoiceBuilder
             return self::empty('This trip has no tagged bills with an amount yet.');
         }
 
-        $currencies = array_values(array_unique(array_map(fn($b) => strtoupper((string)($b['currency'] ?? '')), $bills)));
+        // Recharge in the org's base currency: each foreign bill was already
+        // converted (base_total/base_currency) when pulled from Xero. Older bills
+        // pulled before conversion fall back to their own currency.
+        $currencyOf = fn($b) => strtoupper((string)(($b['base_currency'] ?? '') !== '' ? $b['base_currency'] : ($b['currency'] ?? '')));
+        $amountOf   = fn($b) => ($b['base_total'] ?? null) !== null ? (float)$b['base_total'] : (float)$b['total'];
+
+        $currencies = array_values(array_unique(array_map($currencyOf, $bills)));
         if (count($currencies) > 1) {
-            return self::empty('Bills are in multiple currencies (' . implode(', ', $currencies) . ') — raise this invoice manually in Xero (needs FX conversion).');
+            return self::empty('Bills resolve to multiple currencies (' . implode(', ', $currencies) . ') — refresh bills from Xero so they convert to the org base currency, then try again.');
         }
         $currency = $currencies[0];
 
@@ -47,7 +53,7 @@ final class InvoiceBuilder
         $lines = [];
         $subtotal = 0.0;
         foreach ($bills as $b) {
-            $amt = round((float)$b['total'] * $markup, 2);
+            $amt = round($amountOf($b) * $markup, 2);
             $subtotal += $amt;
             $lines[] = $line(self::lineDescription($b), $amt);
         }
