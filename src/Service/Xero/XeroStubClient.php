@@ -9,7 +9,7 @@ namespace App\Service\Xero;
  */
 final class XeroStubClient implements XeroClientInterface
 {
-    public function listDraftBills(): array
+    public function listActiveBills(): array
     {
         return ['ok' => false, 'bills' => [], 'error' => 'Xero is not connected — connect an org to reconcile bills.'];
     }
@@ -17,6 +17,16 @@ final class XeroStubClient implements XeroClientInterface
     public function tagBill(string $invoiceId, string $reference): array
     {
         return ['ok' => false, 'stubbed' => true, 'error' => 'Xero is not connected.'];
+    }
+
+    public function approveBill(string $invoiceId): array
+    {
+        return ['ok' => false, 'stubbed' => true, 'error' => 'Xero is not connected.'];
+    }
+
+    public function invoiceStatus(string $invoiceId): string
+    {
+        return '';
     }
 
     public function createSalesInvoice(string $clientName, string $currency, string $reference, array $lines): array

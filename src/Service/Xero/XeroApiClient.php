@@ -64,17 +64,18 @@ final class XeroApiClient implements XeroClientInterface
     // --- Module 3: read + tag supplier bills (ACCPAY) ----------------
 
     /**
-     * List DRAFT supplier bills (ACCPAY invoices) from the connected org — the
-     * ones WazzOCR just created. Returns a flat shape for the reconciler.
-     * @return array{ok:bool, bills:array, error?:string}
+     * List ACTIVE supplier bills (ACCPAY) from the connected org — draft ones
+     * WazzOCR just created plus ones already approved (authorised). Excludes
+     * VOIDED/DELETED, so bills that vanish from this list have been retired in
+     * Xero. Each bill carries its Xero 'status'. @return array{ok:bool, bills:array, error?:string}
      */
-    public function listDraftBills(): array
+    public function listActiveBills(): array
     {
         try {
             $auth = XeroOAuth::accessToken();
             if (!$auth) return ['ok' => false, 'bills' => [], 'error' => 'Xero is not connected.'];
 
-            $where = rawurlencode('Type=="ACCPAY" AND Status=="DRAFT"');
+            $where = rawurlencode('Type=="ACCPAY" AND (Status=="DRAFT" OR Status=="SUBMITTED" OR Status=="AUTHORISED")');
             [$code, $body] = XeroOAuth::http('GET', self::API . 'Invoices?where=' . $where, [
                 'Authorization: Bearer ' . $auth['access_token'],
                 'Xero-tenant-id: ' . $auth['tenant_id'],
@@ -108,6 +109,7 @@ final class XeroApiClient implements XeroClientInterface
                     'supplier'       => (string)($inv['Contact']['Name'] ?? ''),
                     'bill_date'      => self::xeroDate($inv['DateString'] ?? ($inv['Date'] ?? '')),
                     'reference'      => (string)($inv['Reference'] ?? ''),
+                    'status'         => strtoupper((string)($inv['Status'] ?? '')),
                     'total'          => $total,
                     'currency'       => $currency,
                     'currency_rate'  => $rate,
@@ -180,6 +182,54 @@ final class XeroApiClient implements XeroClientInterface
                        : ['ok' => false, 'stubbed' => false, 'error' => self::extractError($json, $body)];
         } catch (\Throwable $e) {
             return ['ok' => false, 'stubbed' => false, 'error' => $e->getMessage()];
+        }
+    }
+
+    /**
+     * Approve a supplier bill in Xero: move it DRAFT → AUTHORISED (awaiting
+     * payment). @return array{ok:bool, stubbed:bool, error?:string}
+     */
+    public function approveBill(string $invoiceId): array
+    {
+        try {
+            $auth = XeroOAuth::accessToken();
+            if (!$auth) return ['ok' => false, 'stubbed' => false, 'error' => 'Xero is not connected.'];
+
+            [$code, $body] = XeroOAuth::http('POST', self::API . 'Invoices', [
+                'Authorization: Bearer ' . $auth['access_token'],
+                'Xero-tenant-id: ' . $auth['tenant_id'],
+                'Accept: application/json',
+                'Content-Type: application/json',
+            ], json_encode(['Invoices' => [['InvoiceID' => $invoiceId, 'Status' => 'AUTHORISED']]], JSON_UNESCAPED_UNICODE));
+
+            $json = json_decode($body, true);
+            $ok = $code >= 200 && $code < 300 && strtoupper((string)($json['Invoices'][0]['Status'] ?? '')) === 'AUTHORISED';
+            return $ok ? ['ok' => true, 'stubbed' => false]
+                       : ['ok' => false, 'stubbed' => false, 'error' => self::extractError($json, $body)];
+        } catch (\Throwable $e) {
+            return ['ok' => false, 'stubbed' => false, 'error' => $e->getMessage()];
+        }
+    }
+
+    /**
+     * Current Xero status of one invoice (ACCPAY or ACCREC), e.g. AUTHORISED,
+     * VOIDED, DELETED. Returns '' if it can't be read or no longer exists — used
+     * to retire voided/deleted client invoices from Unidash.
+     */
+    public function invoiceStatus(string $invoiceId): string
+    {
+        try {
+            $auth = XeroOAuth::accessToken();
+            if (!$auth) return '';
+            [$code, $body] = XeroOAuth::http('GET', self::API . 'Invoices/' . rawurlencode($invoiceId), [
+                'Authorization: Bearer ' . $auth['access_token'],
+                'Xero-tenant-id: ' . $auth['tenant_id'],
+                'Accept: application/json',
+            ]);
+            if ($code < 200 || $code >= 300) return '';
+            return strtoupper((string)(json_decode($body, true)['Invoices'][0]['Status'] ?? ''));
+        } catch (\Throwable $e) {
+            return '';
         }
     }
 

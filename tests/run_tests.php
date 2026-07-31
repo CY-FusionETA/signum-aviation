@@ -211,6 +211,16 @@ $ready = \App\Service\Invoices\InvoiceService::readyTrips('DEMO');
 check('ready-to-invoice includes the tagged trip', count($ready), 1);
 check('  → trip 99751', $ready[0]['trip']['trip_number'] ?? '', '99751');
 check('  → build is buildable', $ready[0]['build']['buildable'], true);
+check('  → not yet approved (tagged only)', $ready[0]['approved'], false);
+
+// Approval gate: forTrip + markApproved flip the trip to fully approved.
+$tripId99 = (int)$ready[0]['trip']['id'];
+check('forTrip returns the linked bill', count(\App\Repo\BillRepo::forTrip('DEMO', $tripId99)), 1);
+\App\Repo\BillRepo::markApproved((int)$tb['id']);
+$readyA = \App\Service\Invoices\InvoiceService::readyTrips('DEMO');
+check('after approving every bill → approved flag true', $readyA[0]['approved'], true);
+check('  → bill status is approved', (string)\App\Repo\BillRepo::findById((int)$tb['id'])['match_status'], 'approved');
+check('  → approved bill still appears in readyTrips', count($readyA), 1);
 
 // Un-invoice: forgetting the link lets a trip be raised again.
 $IR = '\App\Repo\InvoiceRepo';
@@ -218,6 +228,12 @@ $IR::store('DEMO', $ready[0]['trip'], $ready[0]['build'], 'xero-1', 'INV-001');
 check('trip shows invoiced after store', !empty($IR::findByTrip('DEMO', (int)$ready[0]['trip']['id'])), true);
 check('deleteByTrip removes the link', $IR::deleteByTrip('DEMO', (int)$ready[0]['trip']['id']), 1);
 check('trip re-invoiceable after delete', $IR::findByTrip('DEMO', (int)$ready[0]['trip']['id']), null);
+
+// Retire bills no longer active in Xero (voided/deleted just vanish).
+check('retireMissing keeps a still-active bill', \App\Repo\BillRepo::retireMissing('DEMO', ['d1']), 0);
+check('  → bill still present', !empty(\App\Repo\BillRepo::findById((int)$tb['id'])), true);
+check('retireMissing removes a bill gone from Xero', \App\Repo\BillRepo::retireMissing('DEMO', ['some-other-id']), 1);
+check('  → bill removed locally', \App\Repo\BillRepo::findById((int)$tb['id']), null);
 
 // --- 10. Module 5: completeness gate (route legs vs tagged bills) ----
 $CC = '\App\Service\Invoices\CompletenessChecker';

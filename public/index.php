@@ -200,6 +200,18 @@ if ($path === '/bills/assign' && $method === 'POST') {
         : 'Assign failed: ' . ($res['error'] ?? 'unknown');
     redirect('/?view=bills');
 }
+if ($path === '/bills/approve' && $method === 'POST') {
+    csrf_check();
+    $res = BillReconciler::approve((int)($_POST['id'] ?? 0));
+    if (empty($res['ok'])) {
+        $_SESSION['flash_err'] = 'Approve failed: ' . ($res['error'] ?? 'unknown');
+    } elseif (!empty($res['invoiced'])) {
+        $_SESSION['flash_ok'] = 'Bill approved — trip fully approved, draft client invoice ' . ($res['invoice_number'] ?: '') . ' created in Xero.';
+    } else {
+        $_SESSION['flash_ok'] = 'Bill approved in Xero' . (!empty($res['reason']) ? ' — ' . $res['reason'] . '.' : '.');
+    }
+    redirect('/?view=bills');
+}
 if ($path === '/bills/tag-all' && $method === 'POST') {
     csrf_check();
     $r = BillReconciler::tagAllMatched();
@@ -292,7 +304,7 @@ function render_home(string $view): void {
     $billsByTrip = [];
     if ($connected) {
         foreach (BillRepo::allForTenant($tenantId) as $b) {
-            if (!in_array((string)$b['match_status'], ['matched', 'tagged'], true)) continue;
+            if (!in_array((string)$b['match_status'], ['matched', 'tagged', 'approved'], true)) continue;
             $tid = (int)$b['matched_trip_id'];
             if ($tid) $billsByTrip[$tid][] = $b;
         }
@@ -545,7 +557,7 @@ function render_invoices(bool $connected, string $tenant, string $tenantId): voi
       <?php if (!$connected): ?>
         <div class="empty">Connect Xero in <a href="<?= e(base()) ?>/?view=settings">Settings</a> first.</div>
       <?php elseif (!$ready): ?>
-        <div class="empty">No trips ready yet. Tag some bills to their trips in <a href="<?= e(base()) ?>/?view=bills">Bills</a> — trips with tagged bills appear here.</div>
+        <div class="empty">No trips ready yet. Tag and <b>approve</b> bills in <a href="<?= e(base()) ?>/?view=bills">Bills</a> — approving a trip's bills raises its invoice here.</div>
       <?php else: ?>
         <div class="tablewrap">
         <table class="grid"><thead><tr>
@@ -568,20 +580,26 @@ function render_invoices(bool $connected, string $tenant, string $tenantId): voi
               <td class="num"><b><?= $money($inv['currency'], $inv['total']) ?></b></td>
               <td><span class="pill green">Invoiced</span> <span class="mono"><?= e($inv['xero_invoice_number']) ?></span></td>
               <td class="nowrap"><span class="muted">✓ in Xero</span></td>
-            <?php elseif (!empty($bd['buildable'])): ?>
+            <?php elseif (!empty($bd['buildable'])): $ready = !empty($r['approved']) && $cp['status']==='complete'; ?>
               <td class="num"><?= $money($bd['currency'], $bd['subtotal']) ?></td>
               <td class="num"><?= $money($bd['currency'], $bd['admin']) ?></td>
               <td class="num"><b><?= $money($bd['currency'], $bd['total']) ?></b></td>
-              <td><?= $cp['status']==='complete' ? '<span class="pill blue">Ready</span>' : '<span class="pill amber" title="Missing: '.e(implode(', ', $cp['missing'])).'">Incomplete</span>' ?></td>
-              <td class="nowrap">
-                <?php $conf = $cp['status']==='complete'
-                    ? 'Create a draft '.$bd['currency'].' invoice to '.addslashes($t['client_name'] ?: 'the client').' for '.($bd['currency'].' '.number_format((float)$bd['total'],2)).'?'
-                    : 'Trip is '.count($cp['covered']).'/'.$cp['legs'].' legs — no bill yet at '.addslashes(implode(', ', $cp['missing'])).'. Create the draft anyway?'; ?>
-                <form method="post" action="<?= e(base()) ?>/invoices/create" onsubmit="return confirm('<?= e($conf) ?>')">
-                  <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>"><input type="hidden" name="trip_id" value="<?= (int)$t['id'] ?>">
-                  <button class="btn <?= $cp['status']==='complete' ? 'primary' : 'ghost' ?> sm"><?= $cp['status']==='complete' ? 'Create draft invoice' : 'Create anyway' ?></button>
-                </form>
-              </td>
+              <?php if ($ready): ?>
+                <td><span class="pill blue">Ready</span></td>
+                <td class="nowrap">
+                  <?php $conf = 'Create a draft '.$bd['currency'].' invoice to '.addslashes($t['client_name'] ?: 'the client').' for '.($bd['currency'].' '.number_format((float)$bd['total'],2)).'?'; ?>
+                  <form method="post" action="<?= e(base()) ?>/invoices/create" onsubmit="return confirm('<?= e($conf) ?>')">
+                    <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>"><input type="hidden" name="trip_id" value="<?= (int)$t['id'] ?>">
+                    <button class="btn primary sm">Create draft invoice</button>
+                  </form>
+                </td>
+              <?php elseif ($cp['status']!=='complete'): ?>
+                <td><span class="pill amber" title="Missing a bill at: <?= e(implode(', ', $cp['missing'])) ?>">Incomplete</span></td>
+                <td class="nowrap"><span class="muted">awaiting bills</span></td>
+              <?php else: ?>
+                <td><span class="pill amber">Awaiting approval</span></td>
+                <td class="nowrap"><a class="link" href="<?= e(base()) ?>/?view=bills">Approve in Bills →</a></td>
+              <?php endif; ?>
             <?php else: ?>
               <td class="num muted" colspan="3"><?= e($bd['reason']) ?></td>
               <td><span class="pill amber">Manual</span></td>
@@ -636,15 +654,15 @@ function render_settings(bool $connected, string $tenant): void {
 function render_bills(bool $connected, string $tenant, string $tenantId): void {
     $bills = $connected ? BillRepo::allForTenant($tenantId) : [];
     $allTrips = TripRepo::all();
-    $c = ['pulled'=>count($bills),'matched'=>0,'tagged'=>0,'ambiguous'=>0,'review'=>0];
+    $c = ['pulled'=>count($bills),'matched'=>0,'tagged'=>0,'approved'=>0,'ambiguous'=>0,'review'=>0];
     foreach ($bills as $b) { $s=(string)$b['match_status']; if(isset($c[$s]))$c[$s]++; }
     $bpill = function(string $s): string {
-        $m = ['tagged'=>['green','Tagged'],'matched'=>['blue','Matched'],'ambiguous'=>['amber','Ambiguous'],'review'=>['gray','Review']];
+        $m = ['approved'=>['green','Approved'],'tagged'=>['blue','Tagged'],'matched'=>['blue','Matched'],'ambiguous'=>['amber','Ambiguous'],'review'=>['gray','Review']];
         [$cl,$t] = $m[$s] ?? ['gray', ucfirst($s)];
         return '<span class="pill '.$cl.'">'.e($t).'</span>';
     };
     ?>
-    <p class="lede">Draft supplier bills WazzOCR created in Xero, matched to a trip in your master list. Confirm a match to write its <b>trip number</b> onto the bill's Reference — linking the cost to the trip for client recharge.</p>
+    <p class="lede">Supplier bills WazzOCR created in Xero, matched to a trip in your master list. Tag writes the <b>trip number</b> onto the bill's Reference; <b>Approve</b> authorises the bill in Xero, and once every bill on a trip is approved and all legs are costed, the client invoice is raised automatically.</p>
 
     <div class="banner <?= $connected ? 'on' : 'off' ?>">
       <div class="binfo"><span class="dot"></span>
@@ -660,8 +678,8 @@ function render_bills(bool $connected, string $tenant, string $tenantId): void {
         <h2>Supplier bills</h2>
         <div class="reschips">
           <span class="chip"><?= $c['pulled'] ?> pulled</span>
-          <span class="chip blue"><?= $c['matched'] ?> matched</span>
-          <span class="chip green"><?= $c['tagged'] ?> tagged</span>
+          <span class="chip blue"><?= $c['matched'] + $c['tagged'] ?> to approve</span>
+          <span class="chip green"><?= $c['approved'] ?> approved</span>
           <span class="chip amber"><?= $c['ambiguous'] + $c['review'] ?> need review</span>
         </div>
       </div>
@@ -702,10 +720,14 @@ function render_bills(bool $connected, string $tenant, string $tenantId): void {
             <td><?php if ($b['matched_trip_number']): ?><span class="mono"><?= e($b['matched_trip_number']) ?></span> <span class="muted">→ <?= e($b['matched_client'] ?: 'no client') ?></span><?php else: ?><span class="muted">—</span><?php endif; ?></td>
             <td><?= $bpill((string)$b['match_status']) ?><?= !empty($b['xero_last_error']) ? ' <span class="warnmark" title="'.e($b['xero_last_error']).'">!</span>' : '' ?></td>
             <td class="nowrap">
-              <?php if ($b['match_status']==='matched'): ?>
-                <form method="post" action="<?= e(base()) ?>/bills/tag" style="display:inline"><input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>"><input type="hidden" name="id" value="<?= (int)$b['id'] ?>"><button class="btn sm">Tag <?= e($b['matched_trip_number']) ?></button></form>
-              <?php elseif ($b['match_status']==='tagged'): ?>
-                <span class="muted">✓ Ref set</span>
+              <?php if ($b['match_status']==='approved'): ?>
+                <span class="muted">✓ Approved</span>
+              <?php elseif ($b['match_status']==='matched' || $b['match_status']==='tagged'): ?>
+                <form method="post" action="<?= e(base()) ?>/bills/approve" style="display:inline" onsubmit="return confirm('Approve this bill in Xero (trip <?= e($b['matched_trip_number']) ?>)? Once every bill on the trip is approved and all legs are costed, the client invoice is raised.')">
+                  <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>"><input type="hidden" name="id" value="<?= (int)$b['id'] ?>">
+                  <button class="btn primary sm">Approve</button>
+                </form>
+                <?php if ($b['match_status']==='tagged'): ?><span class="muted small">✓ tagged</span><?php endif; ?>
               <?php else: ?>
                 <form method="post" action="<?= e(base()) ?>/bills/assign" class="assignform">
                   <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>"><input type="hidden" name="id" value="<?= (int)$b['id'] ?>">

@@ -7,16 +7,25 @@ namespace App\Service\Xero;
 interface XeroClientInterface
 {
     /**
-     * List DRAFT supplier bills (ACCPAY) from the connected org — Module 3 input.
+     * List ACTIVE supplier bills (ACCPAY: draft/submitted/authorised) — Module 3 input.
      * @return array{ok:bool, bills:array, tenant_id?:string, error?:string}
      */
-    public function listDraftBills(): array;
+    public function listActiveBills(): array;
 
     /**
      * Tag a draft bill with the matched trip number (into its Reference).
      * @return array{ok:bool, stubbed:bool, error?:string}
      */
     public function tagBill(string $invoiceId, string $reference): array;
+
+    /**
+     * Approve a supplier bill (DRAFT → AUTHORISED).
+     * @return array{ok:bool, stubbed:bool, error?:string}
+     */
+    public function approveBill(string $invoiceId): array;
+
+    /** Current Xero status of an invoice (e.g. AUTHORISED, VOIDED); '' if gone. */
+    public function invoiceStatus(string $invoiceId): string;
 
     /**
      * Create a DRAFT client sales invoice (ACCREC) — Module 5.

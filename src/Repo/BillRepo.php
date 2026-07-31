@@ -26,7 +26,10 @@ final class BillRepo
     {
         $existing = self::find($tenantId, (string)$bill['invoice_id']);
         $trip = $match['trip'] ?? null;
-        $status = $existing && ($existing['match_status'] ?? '') === 'tagged' ? 'tagged' : $match['status'];
+        // Never downgrade a bill we've already tagged or approved back to a raw match.
+        $sticky = ['tagged', 'approved'];
+        $status = $existing && in_array((string)($existing['match_status'] ?? ''), $sticky, true)
+            ? (string)$existing['match_status'] : $match['status'];
 
         // A re-match that finds no trip must not wipe a link we already have.
         // The reconcile cron re-upserts every bill every 15 min, so blanking
@@ -88,6 +91,38 @@ final class BillRepo
     public static function markTagged(int $id): void
     {
         Db::q("UPDATE xero_bills SET match_status='tagged', tagged_at=CURRENT_TIMESTAMP, xero_last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", [$id]);
+    }
+
+    public static function markApproved(int $id): void
+    {
+        Db::q("UPDATE xero_bills SET match_status='approved', xero_last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", [$id]);
+    }
+
+    /** Bills linked to a trip (matched, tagged or approved). */
+    public static function forTrip(string $tenantId, int $tripId): array
+    {
+        return Db::all(
+            "SELECT * FROM xero_bills WHERE tenant_id = ? AND matched_trip_id = ?
+               AND match_status IN ('matched','tagged','approved')",
+            [$tenantId, $tripId]
+        );
+    }
+
+    /**
+     * Retire local bills that are no longer active in Xero (voided/deleted, or
+     * otherwise gone from the pulled set). Keeps only the given Xero invoice ids.
+     * @return int rows removed.
+     */
+    public static function retireMissing(string $tenantId, array $keepInvoiceIds): int
+    {
+        if (!$keepInvoiceIds) {
+            return Db::q("DELETE FROM xero_bills WHERE tenant_id = ?", [$tenantId])->rowCount();
+        }
+        $ph = implode(',', array_fill(0, count($keepInvoiceIds), '?'));
+        return Db::q(
+            "DELETE FROM xero_bills WHERE tenant_id = ? AND xero_invoice_id NOT IN ({$ph})",
+            array_merge([$tenantId], array_values($keepInvoiceIds))
+        )->rowCount();
     }
 
     public static function markError(int $id, string $error): void

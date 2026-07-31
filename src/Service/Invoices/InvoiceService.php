@@ -12,10 +12,12 @@ use App\Service\Xero\XeroOAuth;
 
 /**
  * Module 5 orchestration:
- *   readyTrips()    trips that have tagged bills → each with its costs + a built
- *                   invoice preview (recharge + admin + support) and whether it's
- *                   already invoiced.
- *   createForTrip() raise the DRAFT client sales invoice in Xero.
+ *   readyTrips()    trips that have linked bills → each with its costs, a built
+ *                   invoice preview, whether every bill is approved, and whether
+ *                   it's already invoiced.
+ *   createForTrip() raise the DRAFT client sales invoice in Xero. Invoices are
+ *                   only created once a trip's bills are ALL approved (via the
+ *                   Approve button) — there is no background auto-create.
  */
 final class InvoiceService
 {
@@ -29,23 +31,26 @@ final class InvoiceService
         ];
     }
 
-    /** @return array<int,array{trip:array, bills:array, build:array, invoice:?array}> */
+    /** @return array<int,array{trip:array, bills:array, build:array, approved:bool, invoice:?array}> */
     public static function readyTrips(string $tenantId): array
     {
         $cfg = self::config();
         $byTrip = [];
-        foreach (BillRepo::tagged($tenantId) as $b) {
+        foreach (BillRepo::allForTenant($tenantId) as $b) {
+            if (!in_array((string)$b['match_status'], ['tagged', 'approved'], true)) continue;
             $byTrip[(int)$b['matched_trip_id']][] = $b;
         }
         $out = [];
         foreach ($byTrip as $tripId => $bills) {
             $trip = TripRepo::findById((int)$tripId);
             if (!$trip) continue;
+            $approved = array_reduce($bills, fn($c, $b) => $c && (string)$b['match_status'] === 'approved', true);
             $out[] = [
                 'trip'     => $trip,
                 'bills'    => $bills,
                 'build'    => InvoiceBuilder::build($bills, $cfg),
                 'complete' => CompletenessChecker::check($trip, $bills),
+                'approved' => $approved,
                 'invoice'  => InvoiceRepo::findByTrip($tenantId, (int)$tripId),
             ];
         }
@@ -55,23 +60,10 @@ final class InvoiceService
     }
 
     /**
-     * Auto-create draft invoices for trips that are COMPLETE (every route leg has
-     * a tagged bill), buildable, and not yet invoiced. Half-costed trips are left
-     * for a human. @return array{created:int, skipped:int, incomplete:int}
+     * Raise the DRAFT client sales invoice for a trip. Requires every linked bill
+     * to be approved and every route leg to be costed — the Approve flow enforces
+     * this before calling here. @return array{ok:bool, invoice_number?:string, error?:string}
      */
-    public static function autoInvoiceComplete(string $tenantId): array
-    {
-        $created = 0; $skipped = 0; $incomplete = 0;
-        foreach (self::readyTrips($tenantId) as $r) {
-            if (!empty($r['invoice']))                 continue;                 // already invoiced
-            if (empty($r['build']['buildable']))       { $skipped++; continue; } // mixed currency
-            if (($r['complete']['status'] ?? '') !== 'complete') { $incomplete++; continue; }
-            self::createForTrip((int)$r['trip']['id'])['ok'] ? $created++ : $skipped++;
-        }
-        return ['created' => $created, 'skipped' => $skipped, 'incomplete' => $incomplete];
-    }
-
-    /** @return array{ok:bool, invoice_number?:string, error?:string} */
     public static function createForTrip(int $tripId): array
     {
         if (!XeroOAuth::isConnected()) return ['ok' => false, 'error' => 'Connect Xero first.'];
@@ -82,7 +74,11 @@ final class InvoiceService
         if (InvoiceRepo::findByTrip($tenantId, $tripId)) return ['ok' => false, 'error' => 'This trip is already invoiced.'];
         if (trim((string)$trip['client_name']) === '') return ['ok' => false, 'error' => 'Trip has no client to invoice.'];
 
-        $bills = array_values(array_filter(BillRepo::tagged($tenantId), fn($b) => (int)$b['matched_trip_id'] === $tripId));
+        $bills = BillRepo::forTrip($tenantId, $tripId);
+        if (!$bills) return ['ok' => false, 'error' => 'This trip has no linked bills to invoice.'];
+        foreach ($bills as $b) {
+            if ((string)$b['match_status'] !== 'approved') return ['ok' => false, 'error' => 'Approve every bill on this trip first.'];
+        }
         $build = InvoiceBuilder::build($bills, self::config());
         if (empty($build['buildable'])) return ['ok' => false, 'error' => $build['reason']];
 

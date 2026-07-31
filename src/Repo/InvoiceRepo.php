@@ -13,6 +13,12 @@ final class InvoiceRepo
         return Db::one("SELECT * FROM trip_invoices WHERE tenant_id = ? AND trip_id = ?", [$tenantId, $tripId]);
     }
 
+    /** All client invoices raised for a tenant — used to verify them against Xero. */
+    public static function allForTenant(string $tenantId): array
+    {
+        return Db::all("SELECT * FROM trip_invoices WHERE tenant_id = ?", [$tenantId]);
+    }
+
     /** Forget the stored invoice link for a trip so it can be re-created (e.g. after
      *  deleting the draft in Xero). @return int rows removed. */
     public static function deleteByTrip(string $tenantId, int $tripId): int
