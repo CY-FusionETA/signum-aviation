@@ -49,7 +49,7 @@ var CONFIG = {
   // Unidash file-drop — hosts each attachment at a short-lived public URL that
   // Wazzup fetches. DROP_KEY must match drop.key in Unidash's config.php.
   DROP_URL: 'https://signum-aviation.fusioneta.com.my/drop',
-  DROP_KEY: 'REPLACE_WITH_DROP_KEY',
+  DROP_KEY: '471f2456249f2560c883cf561fec0091439af2ee8d919e5a',
 
   // Gmail label your filter puts invoices under (create the filter first).
   SOURCE_LABEL:    'supplier-invoices',
