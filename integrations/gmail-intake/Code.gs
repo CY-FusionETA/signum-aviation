@@ -1,37 +1,36 @@
 /**
  * Skyledger — Module 1: Gmail supplier-invoice intake → WazzOCR (Google Apps Script)
  * ---------------------------------------------------------------------------
- * Runs on a time trigger, finds supplier-invoice emails, and POSTs each PDF/
- * image attachment straight to WazzOCR's pipeline over HTTPS. No phone, no
- * WhatsApp send — WazzOCR OCRs the document and creates the draft Xero bill in
- * the routed account's connected organisation.
+ * Runs on a time trigger, finds supplier-invoice emails, and sends each PDF/image
+ * attachment to WazzOCR over WhatsApp (via Wazzup). WazzOCR OCRs the document,
+ * creates the draft Xero bill, and replies in WhatsApp — so every invoice and
+ * WazzOCR's response are visible on the sending WhatsApp line.
  *
- * DEDUPE IS PER ATTACHMENT (not per thread). Each attachment that's been
- * forwarded is recorded in Script Properties by (message id + size + name), so:
+ * THE FLOW (per attachment):
+ *   1. Upload the attachment to Unidash's file-drop (<DROP_URL>) → get a short-
+ *      lived public URL. Wazzup can only send files by URL, not by upload.
+ *   2. POST to Wazzup /v3/message: send that URL to WazzOCR's WhatsApp number
+ *      (WAZZOCR_WHATSAPP) from your Wazzup WhatsApp channel.
+ *   3. WazzOCR receives the WhatsApp, OCRs it, creates the draft Xero bill, and
+ *      replies to your line — Unidash then matches/tags/approves → client invoice.
+ *
+ * DEDUPE IS PER ATTACHMENT (not per thread). Each attachment that's been sent is
+ * recorded in Script Properties by (message id + size + name), so:
  *   - re-sending the same invoice as a NEW email (even a reply in the same
- *     thread) is a new message → it gets forwarded again, and
+ *     thread) is a new message → it gets sent again, and
  *   - the same attachment is never sent twice.
- * This is what lets you re-test the same invoice: just send it as a fresh email.
  *
  * ONE-TIME after pasting/upgrading this script: run `seedProcessed` once. It
  * records every invoice already in your mailbox as "done" WITHOUT sending, so
- * upgrading doesn't re-forward your whole history. New emails from then on flow
- * through normally. (To wipe the record and re-forward everything, run
+ * upgrading doesn't re-send your whole history. (To wipe and re-send, run
  * `resetProcessed`.)
  *
- * HOW THE ROUTING WORKS (no phone needed):
- *   WazzOCR's /api/whatsapp/process-file picks the account from two body fields:
- *     channelId  — the shared trial channel id (WazzOCR → Connections)
- *     chatId     — a phone number listed under that account's
- *                  "Allowed phone numbers" (Connections → Allowed phone numbers)
- *   The phone is only a routing KEY in the payload; nothing is sent to WhatsApp.
- *
- * PREREQUISITES in WazzOCR (account "Signum Aviation"):
- *   1. Connections → connect the Signum Xero org (connect exactly ONE org so the
- *      AI doesn't have to ask which org to bill — that avoids a "pending/picker".)
- *   2. Connections → Allowed phone numbers → add a number (e.g. a placeholder like
- *      60000000018) and use that same number as ROUTING_PHONE below.
- *   3. Note the trial channel id → CHANNEL_ID below.
+ * PREREQUISITES:
+ *   - Wazzup: a connected WhatsApp channel; put the API key in WAZZUP_API_KEY.
+ *   - Unidash config.php: set drop.key to a long random string and put the SAME
+ *     value in DROP_KEY below.
+ *   - WazzOCR: connected to receive invoices on WAZZOCR_WHATSAPP, with exactly
+ *     ONE Xero org connected so it doesn't have to ask which org to bill.
  *
  * SETUP (Gmail side):
  *   1. Gmail filter → apply label CONFIG.SOURCE_LABEL to supplier-invoice emails.
@@ -42,11 +41,15 @@
  */
 
 var CONFIG = {
-  // WazzOCR full pipeline (OCR + create draft Xero bill). HTTPS only.
-  WAZZOCR_URL:   'https://wazzocr.fusioneta.com.my/api/whatsapp/process-file',
-  // Routing (from WazzOCR → Connections for the Signum account):
-  CHANNEL_ID:    'REPLACE_WITH_TRIAL_CHANNEL_ID',
-  ROUTING_PHONE: 'REPLACE_WITH_AN_ALLOWED_PHONE',   // e.g. 60000000018 — must be in Allowed phone numbers
+  // Wazzup — sends the invoice to WazzOCR over WhatsApp. API key from Wazzup → API.
+  WAZZUP_API_KEY:    'ef3eddf51f7d431ab2927e0d46a2dbf3',
+  WAZZUP_CHANNEL_ID: '',                  // blank = auto-detect the WhatsApp channel from the key
+  WAZZOCR_WHATSAPP:  '60102300975',       // WazzOCR's WhatsApp intake number (digits + country code)
+
+  // Unidash file-drop — hosts each attachment at a short-lived public URL that
+  // Wazzup fetches. DROP_KEY must match drop.key in Unidash's config.php.
+  DROP_URL: 'https://signum-aviation.fusioneta.com.my/drop',
+  DROP_KEY: 'REPLACE_WITH_DROP_KEY',
 
   // Gmail label your filter puts invoices under (create the filter first).
   SOURCE_LABEL:    'supplier-invoices',
@@ -78,14 +81,14 @@ function run() {
       msg.getAttachments().forEach(function (att) {
         if (!isForwardable_(att)) return;
         var key = attKey_(msg, att);
-        if (props.getProperty(key)) return;            // this exact attachment already forwarded
+        if (props.getProperty(key)) return;            // this exact attachment already sent
         try {
-          sendToWazzOcr_(att, msg);
+          sendViaWazzup_(att, msg);
           props.setProperty(key, String(Date.now())); // record only on success
           anyProcessed = true;
         } catch (err) {
           anyFailed = true;                            // not recorded → retried next run
-          Logger.log('WazzOCR send failed for "%s": %s', att.getName(), err);
+          Logger.log('Send failed for "%s": %s', att.getName(), err);
         }
       });
     });
@@ -112,41 +115,69 @@ function isForwardable_(att) {
   return CONFIG.ALLOWED_EXT.indexOf(ext) >= 0;
 }
 
-/** POST one attachment to WazzOCR. Throws on failure so the attachment is retried. */
-function sendToWazzOcr_(att, msg) {
-  var res = UrlFetchApp.fetch(CONFIG.WAZZOCR_URL, {
+/**
+ * Send one attachment to WazzOCR over WhatsApp: host it on Unidash's file-drop,
+ * then hand the URL to Wazzup. Throws on failure so the attachment is retried.
+ */
+function sendViaWazzup_(att, msg) {
+  var url = dropFile_(att);   // short-lived public URL Wazzup can fetch
+
+  var payload = {
+    channelId:  getChannelId_(),
+    chatType:   'whatsapp',
+    chatId:     CONFIG.WAZZOCR_WHATSAPP,   // WazzOCR's WhatsApp number
+    contentUri: url,
+  };
+  var res = UrlFetchApp.fetch('https://api.wazzup24.com/v3/message', {
+    method: 'post',
+    contentType: 'application/json',
+    muteHttpExceptions: true,
+    headers: { Authorization: 'Bearer ' + CONFIG.WAZZUP_API_KEY },
+    payload: JSON.stringify(payload),
+  });
+  var code = res.getResponseCode(), body = res.getContentText();
+  if (code < 200 || code >= 300) {
+    throw new Error('Wazzup HTTP ' + code + ' — ' + body.slice(0, 300));
+  }
+  Logger.log('Sent "%s" to WazzOCR via WhatsApp (msg %s) → HTTP %s', att.getName(), msg.getId(), code);
+}
+
+/** Upload an attachment to Unidash's file-drop; returns its public URL. */
+function dropFile_(att) {
+  var res = UrlFetchApp.fetch(CONFIG.DROP_URL, {
     method: 'post',
     muteHttpExceptions: true,
-    payload: {
-      file:      att.copyBlob(),          // multipart "file"
-      channelId: CONFIG.CHANNEL_ID,       // routes to the account
-      chatId:    CONFIG.ROUTING_PHONE,    // allowed-phone routing key (no WhatsApp sent)
-      fileName:  att.getName(),
-    },
+    payload: { key: CONFIG.DROP_KEY, file: att.copyBlob() },   // multipart
   });
+  var code = res.getResponseCode(), body = res.getContentText();
+  if (code < 200 || code >= 300) throw new Error('File-drop HTTP ' + code + ' — ' + body.slice(0, 200));
+  var json = JSON.parse(body);
+  if (!json.url) throw new Error('File-drop returned no url: ' + body.slice(0, 200));
+  return json.url;
+}
 
-  var code = res.getResponseCode();
-  var body = res.getContentText();
-  if (code < 200 || code >= 300) {
-    throw new Error('HTTP ' + code + ' — ' + body.slice(0, 300));
-  }
+/** The Wazzup channelId to send from — explicit, else auto-detected + cached. */
+function getChannelId_() {
+  if (CONFIG.WAZZUP_CHANNEL_ID) return CONFIG.WAZZUP_CHANNEL_ID;
+  var props = PropertiesService.getScriptProperties();
+  var cached = props.getProperty('wazzup_channel_id');
+  if (cached) return cached;
 
-  var json = {};
-  try { json = JSON.parse(body); } catch (e) { /* non-JSON = treat as ok */ }
-
-  if (json.error) {
-    throw new Error('WazzOCR: ' + json.error + (json.ticketCode ? ' [' + json.ticketCode + ']' : ''));
-  }
-  if (json.status === 'ignored') {
-    // Sender phone not mapped to an account on this channel — a config problem.
-    throw new Error('WazzOCR ignored the doc: ROUTING_PHONE "' + CONFIG.ROUTING_PHONE +
-      '" is not in the account\'s Allowed phone numbers (Connections tab).');
-  }
-  if (json.status === 'empty') {
-    Logger.log('WazzOCR read "%s" but found no bill (not an invoice?) — leaving it as done.', att.getName());
-    return; // treated as processed; nothing to bill
-  }
-  Logger.log('WazzOCR accepted "%s" (msg %s) → HTTP %s', att.getName(), msg.getId(), code);
+  var res = UrlFetchApp.fetch('https://api.wazzup24.com/v3/channels', {
+    method: 'get',
+    muteHttpExceptions: true,
+    headers: { Authorization: 'Bearer ' + CONFIG.WAZZUP_API_KEY },
+  });
+  if (res.getResponseCode() >= 300) throw new Error('Wazzup channels HTTP ' + res.getResponseCode() + ' — ' + res.getContentText().slice(0, 200));
+  var chans = JSON.parse(res.getContentText()) || [];
+  var pick = null;
+  chans.forEach(function (c) {
+    var t = String(c.transport || '').toLowerCase();
+    if (!pick && (t.indexOf('whatsapp') >= 0 || t === 'wapi' || t === 'waba')) pick = c;
+  });
+  if (!pick || !pick.channelId) throw new Error('No WhatsApp channel found in Wazzup — set WAZZUP_CHANNEL_ID manually.');
+  props.setProperty('wazzup_channel_id', pick.channelId);
+  return pick.channelId;
 }
 
 /**

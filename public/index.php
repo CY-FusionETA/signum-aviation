@@ -28,6 +28,13 @@ $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
 function redirect(string $to): void { header('Location: ' . base() . $to); exit; }
 function base(): string { return rtrim((string)parse_url((string)cfg('app.base_url',''), PHP_URL_PATH), '/'); }
+/** Absolute origin (https://host…) for building public URLs like the file-drop link. */
+function abs_base(): string {
+    $b = (string)cfg('app.base_url', '');
+    if (preg_match('#^https?://#', $b)) return rtrim($b, '/');
+    $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+    return $scheme . '://' . ($_SERVER['HTTP_HOST'] ?? 'localhost') . base();
+}
 function csrf_token(): string { if (empty($_SESSION['csrf'])) $_SESSION['csrf'] = bin2hex(random_bytes(16)); return $_SESSION['csrf']; }
 function csrf_check(): void { if (!hash_equals($_SESSION['csrf'] ?? '', $_POST['csrf'] ?? '')) { http_response_code(419); exit('Bad CSRF token.'); } }
 function is_authed(): bool { return !empty($_SESSION['authed']); }
@@ -84,6 +91,40 @@ if ($path === '/login/quick' && $method === 'POST') {
 }
 if ($path === '/logout') { session_destroy(); redirect('/login'); }
 if ($path === '/login') { render_login(); exit; }
+
+// --- public file-drop (Gmail intake → Wazzup) -----------------------
+// The Gmail script POSTs an attachment here (guarded by a shared key) and gets a
+// short-lived public URL back; Wazzup then fetches that URL to send the file to
+// WazzOCR over WhatsApp. No session — these run before the auth gate.
+if ($path === '/drop' && $method === 'POST') {
+    $key = (string)(Settings::get('drop.key', '') ?: cfg('drop.key', ''));
+    if ($key === '' || !hash_equals($key, (string)($_POST['key'] ?? ''))) { http_response_code(403); exit('Forbidden'); }
+    $f = $_FILES['file'] ?? null;
+    if (!$f || (int)($f['error'] ?? 1) !== UPLOAD_ERR_OK) { http_response_code(400); exit('No file'); }
+    if ((int)($f['size'] ?? 0) > 10 * 1024 * 1024) { http_response_code(413); exit('File too large (max 10MB).'); }
+    $ext = strtolower(pathinfo((string)($f['name'] ?? ''), PATHINFO_EXTENSION));
+    if (!in_array($ext, ['pdf','png','jpg','jpeg','webp','tif','tiff'], true)) { http_response_code(415); exit('Unsupported file type.'); }
+    $dir = STORAGE_ROOT . '/drop';
+    if (!is_dir($dir)) @mkdir($dir, 0770, true);
+    foreach (glob($dir . '/*') ?: [] as $old) {   // expire anything older than 15 min
+        if (is_file($old) && filemtime($old) < time() - 900) @unlink($old);
+    }
+    $token = bin2hex(random_bytes(16)) . '.' . $ext;
+    if (!move_uploaded_file((string)$f['tmp_name'], $dir . '/' . $token)) { http_response_code(500); exit('Could not store file.'); }
+    header('Content-Type: application/json');
+    echo json_encode(['ok' => true, 'url' => abs_base() . '/drop/' . $token]);
+    exit;
+}
+if ($method === 'GET' && preg_match('#^/drop/([a-f0-9]{32}\.(?:pdf|png|jpe?g|webp|tif|tiff))$#', $path, $dm)) {
+    $file = STORAGE_ROOT . '/drop/' . $dm[1];
+    if (!is_file($file)) { http_response_code(404); exit('Not found'); }
+    $types = ['pdf'=>'application/pdf','png'=>'image/png','jpg'=>'image/jpeg','jpeg'=>'image/jpeg','webp'=>'image/webp','tif'=>'image/tiff','tiff'=>'image/tiff'];
+    header('Content-Type: ' . ($types[strtolower(pathinfo($file, PATHINFO_EXTENSION))] ?? 'application/octet-stream'));
+    header('Content-Length: ' . filesize($file));
+    readfile($file);
+    exit;
+}
+
 if (!is_authed()) redirect('/login');
 
 // --- settings -------------------------------------------------------
