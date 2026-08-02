@@ -64,35 +64,43 @@ final class BillReconciler
     }
 
     /**
-     * Approve a bill: tag it (if needed), authorise it in Xero, then raise the
-     * client invoice once every bill on its trip is approved and all legs costed.
-     * @return array{ok:bool, error?:string, invoiced?:bool, invoice_number?:string, reason?:string}
+     * Approve every bill on a trip: tag each (if needed) and authorise it in Xero,
+     * then raise the client invoice once all are approved and all legs are costed.
+     * @return array{ok:bool, approved:int, failed:int, error?:string, invoiced?:bool, invoice_number?:string, reason?:string}
      */
-    public static function approve(int $id): array
+    public static function approveTrip(int $tripId): array
     {
-        $row = BillRepo::findById($id);
-        if (!$row) return ['ok' => false, 'error' => 'Bill not found.'];
-        if (empty($row['matched_trip_id']) || empty($row['matched_trip_number'])) {
-            return ['ok' => false, 'error' => 'Match this bill to a trip first.'];
-        }
-        if (!XeroOAuth::isConnected()) return ['ok' => false, 'error' => 'Connect Xero first.'];
+        if (!XeroOAuth::isConnected()) return ['ok' => false, 'approved' => 0, 'failed' => 0, 'error' => 'Connect Xero first.'];
         $tenantId = (string)(XeroOAuth::token()['tenant_id'] ?? '');
-        $client   = XeroClientFactory::make();
+        if (!TripRepo::findById($tripId)) return ['ok' => false, 'approved' => 0, 'failed' => 0, 'error' => 'Trip not found.'];
 
-        // Make sure the trip number is on the bill's Reference before approving.
-        if (!in_array((string)$row['match_status'], ['tagged', 'approved'], true)) {
-            $tag = $client->tagBill((string)$row['xero_invoice_id'], (string)$row['matched_trip_number']);
-            if (empty($tag['ok'])) { BillRepo::markError($id, (string)($tag['error'] ?? 'Tag failed.')); return ['ok' => false, 'error' => (string)($tag['error'] ?? 'Tag failed.')]; }
-            BillRepo::markTagged($id);
+        $bills = BillRepo::forTrip($tenantId, $tripId);
+        if (!$bills) return ['ok' => false, 'approved' => 0, 'failed' => 0, 'error' => 'This trip has no matched bills to approve.'];
+
+        $client = XeroClientFactory::make();
+        $approved = 0; $failed = 0; $errors = [];
+        foreach ($bills as $b) {
+            if ((string)$b['match_status'] === 'approved') { $approved++; continue; }
+            $label = (string)($b['invoice_number'] ?: 'bill');
+
+            // Ensure the trip number is on the bill's Reference before approving.
+            if ((string)$b['match_status'] !== 'tagged') {
+                $tag = $client->tagBill((string)$b['xero_invoice_id'], (string)$b['matched_trip_number']);
+                if (empty($tag['ok'])) { BillRepo::markError((int)$b['id'], (string)($tag['error'] ?? 'Tag failed.')); $failed++; $errors[] = "{$label}: " . ($tag['error'] ?? 'tag failed'); continue; }
+                BillRepo::markTagged((int)$b['id']);
+            }
+
+            $ap = $client->approveBill((string)$b['xero_invoice_id']);
+            if (empty($ap['ok'])) { BillRepo::markError((int)$b['id'], (string)($ap['error'] ?? 'Approve failed.')); $failed++; $errors[] = "{$label}: " . ($ap['error'] ?? 'approve failed'); continue; }
+            BillRepo::markApproved((int)$b['id']);
+            $approved++;
         }
 
-        if ((string)$row['match_status'] !== 'approved') {
-            $ap = $client->approveBill((string)$row['xero_invoice_id']);
-            if (empty($ap['ok'])) { BillRepo::markError($id, (string)($ap['error'] ?? 'Approve failed.')); return ['ok' => false, 'error' => (string)($ap['error'] ?? 'Approve failed.')]; }
-            BillRepo::markApproved($id);
-        }
-
-        return ['ok' => true] + self::maybeInvoiceTrip($tenantId, (int)$row['matched_trip_id']);
+        $out = ['ok' => $failed === 0, 'approved' => $approved, 'failed' => $failed];
+        if ($errors) $out['error'] = implode('; ', $errors);
+        // Only invoice if nothing failed (i.e. every bill is now approved).
+        if ($failed === 0) $out += self::maybeInvoiceTrip($tenantId, $tripId);
+        return $out;
     }
 
     /**

@@ -11,6 +11,7 @@ require __DIR__ . '/../src/bootstrap.php';
 use App\Settings;
 use App\Repo\TripRepo;
 use App\Repo\BillRepo;
+use App\Repo\InvoiceRepo;
 use App\Service\Leon\LeonProcessor;
 use App\Service\Bills\BillReconciler;
 use App\Service\Invoices\InvoiceService;
@@ -200,17 +201,20 @@ if ($path === '/bills/assign' && $method === 'POST') {
         : 'Assign failed: ' . ($res['error'] ?? 'unknown');
     redirect('/?view=bills');
 }
-if ($path === '/bills/approve' && $method === 'POST') {
+if ($path === '/trips/approve' && $method === 'POST') {
     csrf_check();
-    $res = BillReconciler::approve((int)($_POST['id'] ?? 0));
-    if (empty($res['ok'])) {
+    $res = BillReconciler::approveTrip((int)($_POST['trip_id'] ?? 0));
+    if (empty($res['ok']) && empty($res['approved'])) {
         $_SESSION['flash_err'] = 'Approve failed: ' . ($res['error'] ?? 'unknown');
     } elseif (!empty($res['invoiced'])) {
-        $_SESSION['flash_ok'] = 'Bill approved — trip fully approved, draft client invoice ' . ($res['invoice_number'] ?: '') . ' created in Xero.';
+        $_SESSION['flash_ok'] = "Approved {$res['approved']} bill(s) — trip fully approved, draft client invoice " . ($res['invoice_number'] ?: '') . ' created in Xero.';
     } else {
-        $_SESSION['flash_ok'] = 'Bill approved in Xero' . (!empty($res['reason']) ? ' — ' . $res['reason'] . '.' : '.');
+        $msg = "Approved {$res['approved']} bill(s).";
+        if (!empty($res['failed'])) $msg .= " {$res['failed']} failed: " . ($res['error'] ?? '');
+        elseif (!empty($res['reason'])) $msg .= ' Invoice held — ' . $res['reason'] . '.';
+        $_SESSION[!empty($res['failed']) ? 'flash_err' : 'flash_ok'] = $msg;
     }
-    redirect('/?view=bills');
+    redirect('/?view=trips');
 }
 if ($path === '/bills/tag-all' && $method === 'POST') {
     csrf_check();
@@ -302,11 +306,15 @@ function render_home(string $view): void {
     // Group linked supplier bills by trip so each row can show whether it's
     // matched to a bill and whether every route leg is costed.
     $billsByTrip = [];
+    $invByTrip   = [];
     if ($connected) {
         foreach (BillRepo::allForTenant($tenantId) as $b) {
             if (!in_array((string)$b['match_status'], ['matched', 'tagged', 'approved'], true)) continue;
             $tid = (int)$b['matched_trip_id'];
             if ($tid) $billsByTrip[$tid][] = $b;
+        }
+        foreach (InvoiceRepo::allForTenant($tenantId) as $iv) {
+            $invByTrip[(int)$iv['trip_id']] = $iv;
         }
     }
 
@@ -317,6 +325,8 @@ function render_home(string $view): void {
         $count  = count($tbills);
         $cp     = CompletenessChecker::check($t, $tbills);
         $cost   = $count === 0 ? 'none' : ($cp['status'] === 'complete' ? 'ready' : 'partial');
+        $approved = $count > 0 && array_reduce($tbills, fn($c, $b) => $c && (string)$b['match_status'] === 'approved', true);
+        $inv    = $invByTrip[(int)$t['id']] ?? null;
         if ($count > 0)      $stat['matched']++;
         if ($cost === 'ready') $stat['ready']++;
         if (($t['entity'] ?? '') === 'inc') $stat['inc']++; else $stat['ltd']++;
@@ -330,6 +340,8 @@ function render_home(string $view): void {
             'bills' => $count, 'cost' => $cost,
             'legs' => (int)$cp['legs'], 'covered' => count($cp['covered']),
             'missing' => implode(', ', $cp['missing']),
+            'approved' => $approved, 'invoiced' => $inv ? true : false,
+            'invoice_number' => $inv ? (string)$inv['xero_invoice_number'] : '',
             'created' => (string)($t['created_at'] ?? ''), 'updated' => (string)($t['updated_at'] ?? ''),
         ];
     }
@@ -527,6 +539,7 @@ function render_trips(array $trips, bool $connected, string $tenant): void {
             <th data-key="flights" class="sortable num">Flts</th>
             <th data-key="bills" class="sortable">Bills</th>
             <th data-key="cost" class="sortable">Costing</th>
+            <th>Approve</th>
             <th class="actcol"></th>
           </tr></thead>
           <tbody id="rows"></tbody>
@@ -662,7 +675,7 @@ function render_bills(bool $connected, string $tenant, string $tenantId): void {
         return '<span class="pill '.$cl.'">'.e($t).'</span>';
     };
     ?>
-    <p class="lede">Supplier bills WazzOCR created in Xero, matched to a trip in your master list. Tag writes the <b>trip number</b> onto the bill's Reference; <b>Approve</b> authorises the bill in Xero, and once every bill on a trip is approved and all legs are costed, the client invoice is raised automatically.</p>
+    <p class="lede">Supplier bills WazzOCR created in Xero, matched to a trip in your master list. Tag writes the <b>trip number</b> onto the bill's Reference. Approving a trip's bills (on the <a class="link" href="<?= e(base()) ?>/?view=trips">Trips</a> tab) authorises them in Xero, and once all of a trip's bills are approved and every leg is costed, the client invoice is raised automatically.</p>
 
     <div class="banner <?= $connected ? 'on' : 'off' ?>">
       <div class="binfo"><span class="dot"></span>
@@ -723,12 +736,10 @@ function render_bills(bool $connected, string $tenant, string $tenantId): void {
             <td class="nowrap">
               <?php if ($b['match_status']==='approved'): ?>
                 <span class="muted">✓ Approved</span>
-              <?php elseif ($b['match_status']==='matched' || $b['match_status']==='tagged'): ?>
-                <form method="post" action="<?= e(base()) ?>/bills/approve" style="display:inline" onsubmit="return confirm('Approve this bill in Xero (trip <?= e($b['matched_trip_number']) ?>)? Once every bill on the trip is approved and all legs are costed, the client invoice is raised.')">
-                  <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>"><input type="hidden" name="id" value="<?= (int)$b['id'] ?>">
-                  <button class="btn primary sm">Approve</button>
-                </form>
-                <?php if ($b['match_status']==='tagged'): ?><span class="muted small">✓ tagged</span><?php endif; ?>
+              <?php elseif ($b['match_status']==='tagged'): ?>
+                <span class="muted">✓ Ref set · approve in <a class="link" href="<?= e(base()) ?>/?view=trips">Trips</a></span>
+              <?php elseif ($b['match_status']==='matched'): ?>
+                <form method="post" action="<?= e(base()) ?>/bills/tag" style="display:inline"><input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>"><input type="hidden" name="id" value="<?= (int)$b['id'] ?>"><button class="btn sm">Tag <?= e($b['matched_trip_number']) ?></button></form>
               <?php else: ?>
                 <form method="post" action="<?= e(base()) ?>/bills/assign" class="assignform">
                   <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>"><input type="hidden" name="id" value="<?= (int)$b['id'] ?>">
@@ -812,6 +823,12 @@ const rowsEl = $('#rows'); if (!rowsEl) { /* not on trips view */ } else {
     const legs = t.legs>0 ? ` <span class="muted small">${t.covered}/${t.legs}</span>` : '';
     return `<span class="pill ${c}"${tip}>${esc(l)}</span>${legs}`;
   }
+  function approveCell(t){
+    if (t.invoiced) return `<span class="pill green" title="Client invoice ${esc(t.invoice_number)}">Invoiced</span>`;
+    if (t.bills>0 && !t.approved) return `<button type="button" class="btn primary sm approve" title="Approve this trip's ${t.bills} bill(s) in Xero">Approve</button>`;
+    if (t.bills>0 && t.approved)  return `<span class="muted small" title="All bills approved — waiting on the remaining route legs">Approved</span>`;
+    return '';
+  }
 
   function render(){
     const list = TRIPS.filter(matches).sort((a,b)=>{
@@ -830,6 +847,7 @@ const rowsEl = $('#rows'); if (!rowsEl) { /* not on trips view */ } else {
         <td class="num">${t.flights===''?'':t.flights}</td>
         <td class="nowrap">${billsCell(t)}</td>
         <td class="nowrap">${costCell(t)}</td>
+        <td class="nowrap">${approveCell(t)}</td>
         <td class="actcol"><button type="button" class="del" title="Delete this trip from the master list" aria-label="Delete trip ${esc(t.trip)}">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
         </button></td>
@@ -860,6 +878,14 @@ const rowsEl = $('#rows'); if (!rowsEl) { /* not on trips view */ } else {
     document.body.appendChild(f); f.submit();
   }
 
+  function approveTrip(id){
+    const t = TRIPS.find(x=>x.id===id); if(!t) return;
+    if (!confirm(`Approve ${t.bills} bill(s) for trip ${t.trip} in Xero?\n\nEach bill is authorised, and once every leg is costed the client invoice is raised.`)) return;
+    const f=document.createElement('form'); f.method='post'; f.action=BASE+'/trips/approve';
+    f.innerHTML = `<input type="hidden" name="csrf" value="${esc(CSRF)}"><input type="hidden" name="trip_id" value="${id}">`;
+    document.body.appendChild(f); f.submit();
+  }
+
   rowsEl.addEventListener('change', e => {
     if (!e.target.classList.contains('pick')) return;
     const id = +e.target.closest('tr').dataset.id;
@@ -869,6 +895,7 @@ const rowsEl = $('#rows'); if (!rowsEl) { /* not on trips view */ } else {
   rowsEl.addEventListener('click', e => {
     if (e.target.classList.contains('pick')) return;
     const tr = e.target.closest('tr'); if (!tr) return;
+    if (e.target.closest('.approve')) { approveTrip(+tr.dataset.id); return; }
     if (e.target.closest('.del')) { deleteTrip(+tr.dataset.id); return; }
     openModal(+tr.dataset.id);
   });
