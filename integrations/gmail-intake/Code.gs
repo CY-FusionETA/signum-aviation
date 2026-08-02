@@ -43,7 +43,7 @@
 var CONFIG = {
   // Wazzup — sends the invoice to WazzOCR over WhatsApp. API key from Wazzup → API.
   WAZZUP_API_KEY:    'ef3eddf51f7d431ab2927e0d46a2dbf3',
-  WAZZUP_CHANNEL_ID: '',                  // blank = auto-detect the WhatsApp channel from the key
+  WAZZUP_CHANNEL_ID: '61e245cf-3c1c-4586-a89b-3c1f75de659a',   // blank = auto-detect from the key
   WAZZOCR_WHATSAPP:  '60102300975',       // WazzOCR's WhatsApp intake number (digits + country code)
 
   // Unidash file-drop — hosts each attachment at a short-lived public URL that
