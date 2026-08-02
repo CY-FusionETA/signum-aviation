@@ -37,7 +37,7 @@
  *   1. Gmail filter → apply label CONFIG.SOURCE_LABEL to supplier-invoice emails.
  *   2. script.google.com → new project bound to that Gmail account → paste this.
  *   3. Fill CONFIG. Run `setup` once (grant perms, create labels), then
- *      `seedProcessed` once, then `installTrigger` once (polls every 5 min).
+ *      `seedProcessed` once, then `installTrigger` once (polls every 1 min).
  *      Use `run` to test by hand.
  */
 
@@ -193,11 +193,11 @@ function ensureLabels_() {
   });
 }
 
-/** Poll every 5 minutes. Run once. */
+/** Poll every minute (Apps Script's fastest time trigger). Run once. */
 function installTrigger() {
   ScriptApp.getProjectTriggers().forEach(function (t) {
     if (t.getHandlerFunction() === 'run') ScriptApp.deleteTrigger(t);
   });
-  ScriptApp.newTrigger('run').timeBased().everyMinutes(5).create();
-  Logger.log('Trigger installed: run() every 5 minutes.');
+  ScriptApp.newTrigger('run').timeBased().everyMinutes(1).create();
+  Logger.log('Trigger installed: run() every 1 minute.');
 }
