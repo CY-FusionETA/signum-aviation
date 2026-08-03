@@ -53,7 +53,7 @@ var CONFIG = {
   WAZZOCR_WHATSAPP:   '60102300975',                            // WazzOCR's WhatsApp intake number
   WABA_CHANNEL_ID:    'e8b53235-fc0f-414d-b427-411aa982ad3d',   // your WABA line's Wazzup channelId
   WABA_NUMBER:        '60386817302',                            // your WABA WhatsApp number
-  WABA_API_KEY:       '',                                       // blank = same Wazzup account as above
+  WABA_API_KEY:       '687372d465f646cda5a46c604b9c4bb3',       // WABA line's own Wazzup account key
   OPENER_TEXT:        'Signum Aviation Attachment from email',
   WINDOW_WAIT_MS:     4000,                                     // pause so the WABA window registers
 
