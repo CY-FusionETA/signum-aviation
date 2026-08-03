@@ -8,9 +8,11 @@
  * THE FLOW (per attachment):
  *   1. Upload the attachment to Unidash's file-drop (<DROP_URL>) → short-lived
  *      public URL (Wazzup can only send files by URL, not by upload).
- *   2. WazzOCR's line (WAZZOCR_CHANNEL_ID) sends an opener text to your WABA
- *      number (WABA_NUMBER) — this opens WABA's FREE 24h service window so the
- *      next hop isn't a paid business-initiated message.
+ *   2. Ensure WABA's FREE service window is open: if it's been more than
+ *      WINDOW_HOURS since the last opener, WazzOCR's line (WAZZOCR_CHANNEL_ID)
+ *      sends one opener text to your WABA number (WABA_NUMBER). If the window is
+ *      still open, no opener is sent. This runs ONLY when relaying a real
+ *      invoice — nothing is ever sent while the system is idle.
  *   3. Your WABA line (WABA_CHANNEL_ID) sends the file URL to WazzOCR
  *      (WAZZOCR_WHATSAPP). WazzOCR sees an inbound invoice from the WABA number
  *      (which must be in WazzOCR's Allowed phone numbers), OCRs it, creates the
@@ -46,7 +48,8 @@
 var CONFIG = {
   // Wazzup — the invoice reaches WazzOCR via a two-hop relay that keeps it inside
   // the WABA free service window (no business-initiated charge):
-  //   1) WazzOCR's line messages your WABA number  → opens a free 24h window
+  //   1) if the window has lapsed, WazzOCR's line messages your WABA number to
+  //      re-open it (only when a real invoice is being sent — never on idle)
   //   2) your WABA line sends the attachment to WazzOCR (free, inside that window)
   WAZZUP_API_KEY:     'ef3eddf51f7d431ab2927e0d46a2dbf3',        // account owning the channels below
   WAZZOCR_CHANNEL_ID: '61e245cf-3c1c-4586-a89b-3c1f75de659a',    // WazzOCR's line — sends the opener
@@ -55,7 +58,8 @@ var CONFIG = {
   WABA_NUMBER:        '60386817302',                            // your WABA WhatsApp number
   WABA_API_KEY:       '687372d465f646cda5a46c604b9c4bb3',       // WABA line's own Wazzup account key
   OPENER_TEXT:        'Signum Aviation Attachment from email',
-  WINDOW_WAIT_MS:     4000,                                     // pause so the WABA window registers
+  WINDOW_HOURS:       20,                                       // assume the WABA free window stays open this long after an opener
+  OPENER_WAIT_MS:     15000,                                    // pause after an opener so it lands before the file (cold-start only)
 
   // Unidash file-drop — hosts each attachment at a short-lived public URL that
   // Wazzup fetches. DROP_KEY must match drop.key in Unidash's config.php.
@@ -129,7 +133,8 @@ function isForwardable_(att) {
 /**
  * Deliver one attachment to WazzOCR via the WABA relay:
  *   1. host the file on Unidash's file-drop (Wazzup can only send files by URL),
- *   2. WazzOCR's line messages the WABA number → opens a free WABA service window,
+ *   2. make sure the WABA free service window is open (send an opener only if it
+ *      has lapsed — see ensureWindowOpen_), then
  *   3. the WABA line sends the file to WazzOCR (free, inside that window).
  * WazzOCR then sees a real inbound invoice from the (allowed) WABA number.
  * Throws on failure so the attachment is retried next run.
@@ -137,17 +142,9 @@ function isForwardable_(att) {
 function sendViaWazzup_(att, msg) {
   var url = dropFile_(att);   // short-lived public URL Wazzup can fetch
 
-  // 1) Opener: WazzOCR's line → WABA number, to open the free service window.
-  wazzupSend_('opener hop (channel ' + CONFIG.WAZZOCR_CHANNEL_ID + ')', CONFIG.WAZZUP_API_KEY, {
-    channelId: CONFIG.WAZZOCR_CHANNEL_ID,
-    chatType:  'whatsapp',
-    chatId:    CONFIG.WABA_NUMBER,
-    text:      CONFIG.OPENER_TEXT + ' — ' + att.getName(),
-  });
+  ensureWindowOpen_();        // opens the WABA window only if it may have closed
 
-  Utilities.sleep(CONFIG.WINDOW_WAIT_MS);   // let the WABA service window register
-
-  // 2) WABA line → WazzOCR, carrying the attachment (free service message).
+  // WABA line → WazzOCR, carrying the attachment (free service message).
   wazzupSend_('WABA hop (channel ' + CONFIG.WABA_CHANNEL_ID + ')', CONFIG.WABA_API_KEY || CONFIG.WAZZUP_API_KEY, {
     channelId:  CONFIG.WABA_CHANNEL_ID,
     chatType:   'whatsapp',
@@ -156,6 +153,28 @@ function sendViaWazzup_(att, msg) {
   });
 
   Logger.log('Relayed "%s" to WazzOCR via WABA %s (msg %s)', att.getName(), CONFIG.WABA_NUMBER, msg.getId());
+}
+
+/**
+ * Ensure the WABA free service window is open before we send a file. Only sends
+ * an opener if it's been more than WINDOW_HOURS since the last one (tracked in
+ * Script Properties). Called ONLY when there's an attachment to send — never on
+ * idle — so no opener ever goes out unless a real invoice is being relayed.
+ */
+function ensureWindowOpen_() {
+  var props = PropertiesService.getScriptProperties();
+  var last  = Number(props.getProperty('waba_window_at') || 0);
+  if (last && (Date.now() - last) < CONFIG.WINDOW_HOURS * 3600 * 1000) return;   // still open
+
+  // WazzOCR's line → WABA number opens the window (WABA sees a customer message).
+  wazzupSend_('opener hop (channel ' + CONFIG.WAZZOCR_CHANNEL_ID + ')', CONFIG.WAZZUP_API_KEY, {
+    channelId: CONFIG.WAZZOCR_CHANNEL_ID,
+    chatType:  'whatsapp',
+    chatId:    CONFIG.WABA_NUMBER,
+    text:      CONFIG.OPENER_TEXT,
+  });
+  Utilities.sleep(CONFIG.OPENER_WAIT_MS);   // let the opener land before the file goes out
+  props.setProperty('waba_window_at', String(Date.now()));
 }
 
 /** POST one Wazzup /v3/message. Throws on non-2xx, tagged with which hop it was. */
