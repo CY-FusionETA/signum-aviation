@@ -51,7 +51,7 @@ var CONFIG = {
   WAZZUP_API_KEY:     'ef3eddf51f7d431ab2927e0d46a2dbf3',        // account owning the channels below
   WAZZOCR_CHANNEL_ID: '61e245cf-3c1c-4586-a89b-3c1f75de659a',    // WazzOCR's line — sends the opener
   WAZZOCR_WHATSAPP:   '60102300975',                            // WazzOCR's WhatsApp intake number
-  WABA_CHANNEL_ID:    'REPLACE_WITH_WABA_CHANNEL_ID',           // your WABA line's Wazzup channelId
+  WABA_CHANNEL_ID:    'e8b53235-fc0f-414d-b427-411aa982ad3d',   // your WABA line's Wazzup channelId
   WABA_NUMBER:        '60386817302',                            // your WABA WhatsApp number
   WABA_API_KEY:       '',                                       // blank = same Wazzup account as above
   OPENER_TEXT:        'Signum Aviation Attachment from email',
