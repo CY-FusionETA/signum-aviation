@@ -138,7 +138,7 @@ function sendViaWazzup_(att, msg) {
   var url = dropFile_(att);   // short-lived public URL Wazzup can fetch
 
   // 1) Opener: WazzOCR's line → WABA number, to open the free service window.
-  wazzupSend_(CONFIG.WAZZUP_API_KEY, {
+  wazzupSend_('opener hop (channel ' + CONFIG.WAZZOCR_CHANNEL_ID + ')', CONFIG.WAZZUP_API_KEY, {
     channelId: CONFIG.WAZZOCR_CHANNEL_ID,
     chatType:  'whatsapp',
     chatId:    CONFIG.WABA_NUMBER,
@@ -148,7 +148,7 @@ function sendViaWazzup_(att, msg) {
   Utilities.sleep(CONFIG.WINDOW_WAIT_MS);   // let the WABA service window register
 
   // 2) WABA line → WazzOCR, carrying the attachment (free service message).
-  wazzupSend_(CONFIG.WABA_API_KEY || CONFIG.WAZZUP_API_KEY, {
+  wazzupSend_('WABA hop (channel ' + CONFIG.WABA_CHANNEL_ID + ')', CONFIG.WABA_API_KEY || CONFIG.WAZZUP_API_KEY, {
     channelId:  CONFIG.WABA_CHANNEL_ID,
     chatType:   'whatsapp',
     chatId:     CONFIG.WAZZOCR_WHATSAPP,
@@ -158,8 +158,8 @@ function sendViaWazzup_(att, msg) {
   Logger.log('Relayed "%s" to WazzOCR via WABA %s (msg %s)', att.getName(), CONFIG.WABA_NUMBER, msg.getId());
 }
 
-/** POST one Wazzup /v3/message. Throws on non-2xx. */
-function wazzupSend_(apiKey, payload) {
+/** POST one Wazzup /v3/message. Throws on non-2xx, tagged with which hop it was. */
+function wazzupSend_(label, apiKey, payload) {
   var res = UrlFetchApp.fetch('https://api.wazzup24.com/v3/message', {
     method: 'post',
     contentType: 'application/json',
@@ -168,7 +168,7 @@ function wazzupSend_(apiKey, payload) {
     payload: JSON.stringify(payload),
   });
   var code = res.getResponseCode(), body = res.getContentText();
-  if (code < 200 || code >= 300) throw new Error('Wazzup HTTP ' + code + ' — ' + body.slice(0, 300));
+  if (code < 200 || code >= 300) throw new Error(label + ' — Wazzup HTTP ' + code + ' — ' + body.slice(0, 300));
   return body;
 }
 
