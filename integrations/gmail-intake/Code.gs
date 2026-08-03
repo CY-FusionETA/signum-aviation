@@ -1,18 +1,21 @@
 /**
  * Skyledger — Module 1: Gmail supplier-invoice intake → WazzOCR (Google Apps Script)
  * ---------------------------------------------------------------------------
- * Runs on a time trigger, finds supplier-invoice emails, and sends each PDF/image
- * attachment to WazzOCR over WhatsApp (via Wazzup). WazzOCR OCRs the document,
- * creates the draft Xero bill, and replies in WhatsApp — so every invoice and
- * WazzOCR's response are visible on the sending WhatsApp line.
+ * Runs on a time trigger, finds supplier-invoice emails, and delivers each PDF/
+ * image to WazzOCR over WhatsApp via a WABA relay. WazzOCR OCRs it, creates the
+ * draft Xero bill, and replies in WhatsApp on the WABA line.
  *
  * THE FLOW (per attachment):
- *   1. Upload the attachment to Unidash's file-drop (<DROP_URL>) → get a short-
- *      lived public URL. Wazzup can only send files by URL, not by upload.
- *   2. POST to Wazzup /v3/message: send that URL to WazzOCR's WhatsApp number
- *      (WAZZOCR_WHATSAPP) from your Wazzup WhatsApp channel.
- *   3. WazzOCR receives the WhatsApp, OCRs it, creates the draft Xero bill, and
- *      replies to your line — Unidash then matches/tags/approves → client invoice.
+ *   1. Upload the attachment to Unidash's file-drop (<DROP_URL>) → short-lived
+ *      public URL (Wazzup can only send files by URL, not by upload).
+ *   2. WazzOCR's line (WAZZOCR_CHANNEL_ID) sends an opener text to your WABA
+ *      number (WABA_NUMBER) — this opens WABA's FREE 24h service window so the
+ *      next hop isn't a paid business-initiated message.
+ *   3. Your WABA line (WABA_CHANNEL_ID) sends the file URL to WazzOCR
+ *      (WAZZOCR_WHATSAPP). WazzOCR sees an inbound invoice from the WABA number
+ *      (which must be in WazzOCR's Allowed phone numbers), OCRs it, creates the
+ *      draft Xero bill, and replies on the WABA line.
+ *   Unidash then matches/tags/approves the bill → client invoice.
  *
  * DEDUPE IS PER ATTACHMENT (not per thread). Each attachment that's been sent is
  * recorded in Script Properties by (message id + size + name), so:
@@ -41,10 +44,18 @@
  */
 
 var CONFIG = {
-  // Wazzup — sends the invoice to WazzOCR over WhatsApp. API key from Wazzup → API.
-  WAZZUP_API_KEY:    'ef3eddf51f7d431ab2927e0d46a2dbf3',
-  WAZZUP_CHANNEL_ID: '61e245cf-3c1c-4586-a89b-3c1f75de659a',   // blank = auto-detect from the key
-  WAZZOCR_WHATSAPP:  '60102300975',       // WazzOCR's WhatsApp intake number (digits + country code)
+  // Wazzup — the invoice reaches WazzOCR via a two-hop relay that keeps it inside
+  // the WABA free service window (no business-initiated charge):
+  //   1) WazzOCR's line messages your WABA number  → opens a free 24h window
+  //   2) your WABA line sends the attachment to WazzOCR (free, inside that window)
+  WAZZUP_API_KEY:     'ef3eddf51f7d431ab2927e0d46a2dbf3',        // account owning the channels below
+  WAZZOCR_CHANNEL_ID: '61e245cf-3c1c-4586-a89b-3c1f75de659a',    // WazzOCR's line — sends the opener
+  WAZZOCR_WHATSAPP:   '60102300975',                            // WazzOCR's WhatsApp intake number
+  WABA_CHANNEL_ID:    'REPLACE_WITH_WABA_CHANNEL_ID',           // your WABA line's Wazzup channelId
+  WABA_NUMBER:        '60386817302',                            // your WABA WhatsApp number
+  WABA_API_KEY:       '',                                       // blank = same Wazzup account as above
+  OPENER_TEXT:        'Signum Aviation Attachment from email',
+  WINDOW_WAIT_MS:     4000,                                     // pause so the WABA window registers
 
   // Unidash file-drop — hosts each attachment at a short-lived public URL that
   // Wazzup fetches. DROP_KEY must match drop.key in Unidash's config.php.
@@ -116,30 +127,49 @@ function isForwardable_(att) {
 }
 
 /**
- * Send one attachment to WazzOCR over WhatsApp: host it on Unidash's file-drop,
- * then hand the URL to Wazzup. Throws on failure so the attachment is retried.
+ * Deliver one attachment to WazzOCR via the WABA relay:
+ *   1. host the file on Unidash's file-drop (Wazzup can only send files by URL),
+ *   2. WazzOCR's line messages the WABA number → opens a free WABA service window,
+ *   3. the WABA line sends the file to WazzOCR (free, inside that window).
+ * WazzOCR then sees a real inbound invoice from the (allowed) WABA number.
+ * Throws on failure so the attachment is retried next run.
  */
 function sendViaWazzup_(att, msg) {
   var url = dropFile_(att);   // short-lived public URL Wazzup can fetch
 
-  var payload = {
-    channelId:  getChannelId_(),
+  // 1) Opener: WazzOCR's line → WABA number, to open the free service window.
+  wazzupSend_(CONFIG.WAZZUP_API_KEY, {
+    channelId: CONFIG.WAZZOCR_CHANNEL_ID,
+    chatType:  'whatsapp',
+    chatId:    CONFIG.WABA_NUMBER,
+    text:      CONFIG.OPENER_TEXT + ' — ' + att.getName(),
+  });
+
+  Utilities.sleep(CONFIG.WINDOW_WAIT_MS);   // let the WABA service window register
+
+  // 2) WABA line → WazzOCR, carrying the attachment (free service message).
+  wazzupSend_(CONFIG.WABA_API_KEY || CONFIG.WAZZUP_API_KEY, {
+    channelId:  CONFIG.WABA_CHANNEL_ID,
     chatType:   'whatsapp',
-    chatId:     CONFIG.WAZZOCR_WHATSAPP,   // WazzOCR's WhatsApp number
+    chatId:     CONFIG.WAZZOCR_WHATSAPP,
     contentUri: url,
-  };
+  });
+
+  Logger.log('Relayed "%s" to WazzOCR via WABA %s (msg %s)', att.getName(), CONFIG.WABA_NUMBER, msg.getId());
+}
+
+/** POST one Wazzup /v3/message. Throws on non-2xx. */
+function wazzupSend_(apiKey, payload) {
   var res = UrlFetchApp.fetch('https://api.wazzup24.com/v3/message', {
     method: 'post',
     contentType: 'application/json',
     muteHttpExceptions: true,
-    headers: { Authorization: 'Bearer ' + CONFIG.WAZZUP_API_KEY },
+    headers: { Authorization: 'Bearer ' + apiKey },
     payload: JSON.stringify(payload),
   });
   var code = res.getResponseCode(), body = res.getContentText();
-  if (code < 200 || code >= 300) {
-    throw new Error('Wazzup HTTP ' + code + ' — ' + body.slice(0, 300));
-  }
-  Logger.log('Sent "%s" to WazzOCR via WhatsApp (msg %s) → HTTP %s', att.getName(), msg.getId(), code);
+  if (code < 200 || code >= 300) throw new Error('Wazzup HTTP ' + code + ' — ' + body.slice(0, 300));
+  return body;
 }
 
 /** Upload an attachment to Unidash's file-drop; returns its public URL. */
@@ -154,30 +184,6 @@ function dropFile_(att) {
   var json = JSON.parse(body);
   if (!json.url) throw new Error('File-drop returned no url: ' + body.slice(0, 200));
   return json.url;
-}
-
-/** The Wazzup channelId to send from — explicit, else auto-detected + cached. */
-function getChannelId_() {
-  if (CONFIG.WAZZUP_CHANNEL_ID) return CONFIG.WAZZUP_CHANNEL_ID;
-  var props = PropertiesService.getScriptProperties();
-  var cached = props.getProperty('wazzup_channel_id');
-  if (cached) return cached;
-
-  var res = UrlFetchApp.fetch('https://api.wazzup24.com/v3/channels', {
-    method: 'get',
-    muteHttpExceptions: true,
-    headers: { Authorization: 'Bearer ' + CONFIG.WAZZUP_API_KEY },
-  });
-  if (res.getResponseCode() >= 300) throw new Error('Wazzup channels HTTP ' + res.getResponseCode() + ' — ' + res.getContentText().slice(0, 200));
-  var chans = JSON.parse(res.getContentText()) || [];
-  var pick = null;
-  chans.forEach(function (c) {
-    var t = String(c.transport || '').toLowerCase();
-    if (!pick && (t.indexOf('whatsapp') >= 0 || t === 'wapi' || t === 'waba')) pick = c;
-  });
-  if (!pick || !pick.channelId) throw new Error('No WhatsApp channel found in Wazzup — set WAZZUP_CHANNEL_ID manually.');
-  props.setProperty('wazzup_channel_id', pick.channelId);
-  return pick.channelId;
 }
 
 /**
