@@ -211,6 +211,19 @@ check('null total stays null', $XA::baseAmount(null, 0.25), null);
 
 check('invoice reference format', $IB::reference(['aircraft'=>'MAL191','end_date'=>'2026-03-30','trip_number'=>'99751']), 'MAL191 2026-03-30 99751');
 
+// Attachment filenames: bill-number prefix, de-collision, illegal-char strip.
+$used = [];
+check('attachment name prefixed with bill number', $XA::attachmentName('SN030473','invoice.pdf',$used), 'SN030473 - invoice.pdf');
+check('  → different bill, same file: no collision', $XA::attachmentName('GH-037','invoice.pdf',$used), 'GH-037 - invoice.pdf');
+$dup = [];
+check('same-name first copy kept as-is', $XA::attachmentName('','scan.pdf',$dup), 'scan.pdf');
+check('  → second copy de-collided before extension', $XA::attachmentName('','scan.pdf',$dup), 'scan (2).pdf');
+check('  → third copy increments', $XA::attachmentName('','scan.pdf',$dup), 'scan (3).pdf');
+$clean = [];
+check('illegal path chars stripped', $XA::attachmentName('','a/b:c*d.pdf',$clean), 'a_b_c_d.pdf');
+$empty = [];
+check('empty name falls back', $XA::attachmentName('','',$empty), 'attachment');
+
 // readyTrips picks up a trip once its bill is tagged
 $t99 = null; foreach (TripRepo::all() as $tt) if ($tt['trip_number']==='99751') $t99 = $tt;
 $tb = \App\Repo\BillRepo::upsert('DEMO', ['invoice_id'=>'d1','supplier'=>'ASA','total'=>100,'currency'=>'USD','description'=>'Ground Handling at VHHH on 30/03/2026 for MAL191'],

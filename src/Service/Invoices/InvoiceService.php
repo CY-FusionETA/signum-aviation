@@ -92,6 +92,17 @@ final class InvoiceService
         if (empty($res['ok'])) return ['ok' => false, 'error' => (string)($res['error'] ?? 'Xero rejected the invoice.')];
 
         InvoiceRepo::store($tenantId, $trip, $build, (string)$res['invoice_id'], (string)$res['invoice_number']);
-        return ['ok' => true, 'invoice_number' => (string)$res['invoice_number']];
+
+        // Copy each supplier bill's backup docs onto the client invoice (visible
+        // online). Best-effort — the invoice stands even if a copy fails.
+        $billMap = [];
+        foreach ($bills as $b) {
+            $bid = (string)($b['xero_invoice_id'] ?? '');
+            if ($bid !== '') $billMap[$bid] = (string)($b['invoice_number'] ?? '');
+        }
+        $att = $billMap ? $client->copyBillAttachmentsToInvoice((string)$res['invoice_id'], $billMap) : ['copied' => 0, 'failed' => 0];
+
+        return ['ok' => true, 'invoice_number' => (string)$res['invoice_number'],
+                'attachments_copied' => (int)($att['copied'] ?? 0), 'attachments_failed' => (int)($att['failed'] ?? 0)];
     }
 }

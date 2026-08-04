@@ -287,6 +287,108 @@ final class XeroApiClient implements XeroClientInterface
         }
     }
 
+    // --- Module 5: copy supplier-bill attachments onto the client invoice ---
+
+    /**
+     * Copy every attachment from each supplier bill onto the client sales invoice
+     * so the client sees the third-party backup. Filenames are prefixed with the
+     * bill number (and de-collided) so two bills' "invoice.pdf" don't overwrite
+     * each other. IncludeOnline=true makes each file visible on the online invoice.
+     * Best-effort: a copy failure never rolls back the already-created invoice.
+     * @param array<string,string> $bills  [bill Xero InvoiceID => bill number]
+     * @return array{ok:bool, copied:int, failed:int, stubbed:bool, error?:string}
+     */
+    public function copyBillAttachmentsToInvoice(string $invoiceId, array $bills): array
+    {
+        try {
+            $auth = XeroOAuth::accessToken();
+            if (!$auth) return ['ok' => false, 'copied' => 0, 'failed' => 0, 'stubbed' => false, 'error' => 'Xero is not connected.'];
+
+            $copied = 0; $failed = 0; $used = [];
+            foreach ($bills as $billId => $billNumber) {
+                $billId = (string)$billId;
+                if ($billId === '') continue;
+                foreach (self::listAttachments($auth, $billId) as $att) {
+                    $name = (string)($att['FileName'] ?? '');
+                    $mime = (string)($att['MimeType'] ?? 'application/octet-stream');
+                    if ($name === '') continue;
+                    $bytes = self::downloadAttachment($auth, $billId, $name, $mime);
+                    if ($bytes === null || $bytes === '') { $failed++; continue; }
+                    $target = self::attachmentName((string)$billNumber, $name, $used);
+                    self::uploadAttachment($auth, $invoiceId, $target, $bytes, $mime) ? $copied++ : $failed++;
+                }
+            }
+            return ['ok' => $failed === 0, 'copied' => $copied, 'failed' => $failed, 'stubbed' => false];
+        } catch (\Throwable $e) {
+            return ['ok' => false, 'copied' => 0, 'failed' => 0, 'stubbed' => false, 'error' => $e->getMessage()];
+        }
+    }
+
+    /** List one invoice's attachments. @return array<int,array> [] on any error. */
+    private static function listAttachments(array $auth, string $invoiceId): array
+    {
+        [$code, $body] = XeroOAuth::http('GET', self::API . 'Invoices/' . rawurlencode($invoiceId) . '/Attachments', [
+            'Authorization: Bearer ' . $auth['access_token'],
+            'Xero-tenant-id: ' . $auth['tenant_id'],
+            'Accept: application/json',
+        ]);
+        if ($code < 200 || $code >= 300) return [];
+        $json = json_decode($body, true);
+        return is_array($json['Attachments'] ?? null) ? $json['Attachments'] : [];
+    }
+
+    /** Download one attachment's raw bytes. Returns null on any error. */
+    private static function downloadAttachment(array $auth, string $invoiceId, string $fileName, string $mime): ?string
+    {
+        [$code, $body] = XeroOAuth::http('GET', self::API . 'Invoices/' . rawurlencode($invoiceId) . '/Attachments/' . rawurlencode($fileName), [
+            'Authorization: Bearer ' . $auth['access_token'],
+            'Xero-tenant-id: ' . $auth['tenant_id'],
+            'Accept: ' . ($mime !== '' ? $mime : '*/*'),
+        ]);
+        return ($code >= 200 && $code < 300) ? $body : null;
+    }
+
+    /** Upload raw bytes as an attachment on an invoice. IncludeOnline for viewable types. */
+    private static function uploadAttachment(array $auth, string $invoiceId, string $fileName, string $bytes, string $mime): bool
+    {
+        // IncludeOnline is only accepted for browser-viewable types on ACCREC invoices.
+        $online = in_array(strtolower($mime), ['application/pdf', 'image/png', 'image/jpeg', 'image/jpg', 'image/gif'], true);
+        $url = self::API . 'Invoices/' . rawurlencode($invoiceId) . '/Attachments/' . rawurlencode($fileName)
+             . ($online ? '?IncludeOnline=true' : '');
+        [$code] = XeroOAuth::http('PUT', $url, [
+            'Authorization: Bearer ' . $auth['access_token'],
+            'Xero-tenant-id: ' . $auth['tenant_id'],
+            'Accept: application/json',
+            'Content-Type: ' . ($mime !== '' ? $mime : 'application/octet-stream'),
+            'Content-Length: ' . strlen($bytes),
+        ], $bytes);
+        return $code >= 200 && $code < 300;
+    }
+
+    /**
+     * Build a unique, Xero-safe attachment filename: "<bill no> - <original>",
+     * de-collided with " (2)", " (3)"… when the same name recurs. $used is a
+     * lowercase-name set carried across a copy run. Pure — unit tested.
+     */
+    public static function attachmentName(string $billNumber, string $fileName, array &$used): string
+    {
+        $billNumber = trim($billNumber);
+        $base = ($billNumber !== '' ? $billNumber . ' - ' : '') . $fileName;
+        $base = preg_replace('#[/\\\\:*?"<>|]+#', '_', $base);          // strip path/illegal chars
+        $base = trim((string)$base) !== '' ? (string)$base : 'attachment';
+
+        $candidate = $base; $i = 2;
+        while (isset($used[strtolower($candidate)])) {
+            $dot = strrpos($base, '.');
+            $candidate = $dot !== false && $dot > 0
+                ? substr($base, 0, $dot) . " ($i)" . substr($base, $dot)
+                : $base . " ($i)";
+            $i++;
+        }
+        $used[strtolower($candidate)] = true;
+        return $candidate;
+    }
+
     /** Xero dates arrive as "2026-03-26T00:00:00" (DateString) or "/Date(ms+0000)/". */
     private static function xeroDate(string $d): string
     {

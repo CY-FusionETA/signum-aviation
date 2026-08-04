@@ -32,4 +32,12 @@ interface XeroClientInterface
      * @return array{ok:bool, invoice_id:?string, invoice_number:?string, stubbed:bool, error?:string}
      */
     public function createSalesInvoice(string $clientName, string $currency, string $reference, array $lines): array;
+
+    /**
+     * Copy each supplier bill's attachments onto a client sales invoice, so the
+     * client sees the third-party backup on their invoice. Best-effort.
+     * @param array<string,string> $bills  [bill Xero InvoiceID => bill number]
+     * @return array{ok:bool, copied:int, failed:int, stubbed:bool, error?:string}
+     */
+    public function copyBillAttachmentsToInvoice(string $invoiceId, array $bills): array;
 }

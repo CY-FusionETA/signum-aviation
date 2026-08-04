@@ -33,4 +33,9 @@ final class XeroStubClient implements XeroClientInterface
     {
         return ['ok' => false, 'invoice_id' => null, 'invoice_number' => null, 'stubbed' => true, 'error' => 'Xero is not connected.'];
     }
+
+    public function copyBillAttachmentsToInvoice(string $invoiceId, array $bills): array
+    {
+        return ['ok' => true, 'copied' => 0, 'failed' => 0, 'stubbed' => true];
+    }
 }
