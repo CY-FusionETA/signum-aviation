@@ -102,7 +102,22 @@ final class InvoiceService
         }
         $att = $billMap ? $client->copyBillAttachmentsToInvoice((string)$res['invoice_id'], $billMap) : ['copied' => 0, 'failed' => 0];
 
+        // Record billable-expense links (cost recovered on this invoice). The
+        // recharge lines are the first N invoice lines, one per bill-with-a-total,
+        // in bill order — this filter MUST mirror InvoiceBuilder::build().
+        $rechargeBills = array_values(array_filter($bills, fn($b) => ($b['total'] ?? null) !== null));
+        $lineIds = $res['line_item_ids'] ?? [];
+        $links   = [];
+        foreach ($rechargeBills as $i => $b) {
+            $bid = (string)($b['xero_invoice_id'] ?? '');
+            $tl  = (string)($lineIds[$i] ?? '');
+            if ($bid !== '' && $tl !== '') $links[] = ['bill_id' => $bid, 'target_line_id' => $tl];
+        }
+        $contactId = (string)($res['contact_id'] ?? '');
+        $lt = ($links && $contactId !== '') ? $client->linkBillCostsToInvoice((string)$res['invoice_id'], $contactId, $links) : ['linked' => 0, 'failed' => 0];
+
         return ['ok' => true, 'invoice_number' => (string)$res['invoice_number'],
-                'attachments_copied' => (int)($att['copied'] ?? 0), 'attachments_failed' => (int)($att['failed'] ?? 0)];
+                'attachments_copied' => (int)($att['copied'] ?? 0), 'attachments_failed' => (int)($att['failed'] ?? 0),
+                'links_created' => (int)($lt['linked'] ?? 0), 'links_failed' => (int)($lt['failed'] ?? 0)];
     }
 }

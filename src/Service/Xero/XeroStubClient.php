@@ -38,4 +38,9 @@ final class XeroStubClient implements XeroClientInterface
     {
         return ['ok' => true, 'copied' => 0, 'failed' => 0, 'stubbed' => true];
     }
+
+    public function linkBillCostsToInvoice(string $invoiceId, string $contactId, array $links): array
+    {
+        return ['ok' => true, 'linked' => 0, 'skipped' => 0, 'failed' => 0, 'stubbed' => true];
+    }
 }

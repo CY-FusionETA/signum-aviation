@@ -40,4 +40,13 @@ interface XeroClientInterface
      * @return array{ok:bool, copied:int, failed:int, stubbed:bool, error?:string}
      */
     public function copyBillAttachmentsToInvoice(string $invoiceId, array $bills): array;
+
+    /**
+     * Record billable-expense links (Xero LinkedTransactions) marking each bill's
+     * cost as recovered on the client invoice. Best-effort, idempotent. Internal
+     * accounting flag only — does not change the invoice the client sees.
+     * @param array<int,array{bill_id:string,target_line_id:string}> $links
+     * @return array{ok:bool, linked:int, skipped:int, failed:int, stubbed:bool, error?:string}
+     */
+    public function linkBillCostsToInvoice(string $invoiceId, string $contactId, array $links): array;
 }

@@ -281,7 +281,11 @@ final class XeroApiClient implements XeroClientInterface
             if ($code < 200 || $code >= 300 || !$id) {
                 return ['ok' => false, 'invoice_id' => null, 'invoice_number' => null, 'stubbed' => false, 'error' => self::extractError($json, $body)];
             }
-            return ['ok' => true, 'invoice_id' => (string)$id, 'invoice_number' => (string)($inv['InvoiceNumber'] ?? ''), 'stubbed' => false];
+            // Line-item ids come back in the order we sent them — the caller pairs
+            // them with the bills to record billable-expense links.
+            $lineIds = array_values(array_filter(array_map(fn($l) => (string)($l['LineItemID'] ?? ''), $inv['LineItems'] ?? [])));
+            return ['ok' => true, 'invoice_id' => (string)$id, 'invoice_number' => (string)($inv['InvoiceNumber'] ?? ''),
+                    'contact_id' => (string)$contactId, 'line_item_ids' => $lineIds, 'stubbed' => false];
         } catch (\Throwable $e) {
             return ['ok' => false, 'invoice_id' => null, 'invoice_number' => null, 'stubbed' => false, 'error' => $e->getMessage()];
         }
@@ -362,6 +366,93 @@ final class XeroApiClient implements XeroClientInterface
             'Content-Type: ' . ($mime !== '' ? $mime : 'application/octet-stream'),
             'Content-Length: ' . strlen($bytes),
         ], $bytes);
+        return $code >= 200 && $code < 300;
+    }
+
+    // --- Module 5: billable-expense links (LinkedTransactions) --------------
+
+    /**
+     * Record that each supplier bill's cost has been recovered on the client
+     * invoice, via Xero LinkedTransactions (billable expenses). Every source line
+     * on a bill is linked to that bill's recharge line on the invoice. Best-effort
+     * and idempotent: source lines already linked are skipped, so a re-run adds
+     * nothing. Purely an internal cost-recovery flag — the client sees no change.
+     * @param array<int,array{bill_id:string,target_line_id:string}> $links
+     * @return array{ok:bool, linked:int, skipped:int, failed:int, stubbed:bool, error?:string}
+     */
+    public function linkBillCostsToInvoice(string $invoiceId, string $contactId, array $links): array
+    {
+        try {
+            $auth = XeroOAuth::accessToken();
+            if (!$auth) return ['ok' => false, 'linked' => 0, 'skipped' => 0, 'failed' => 0, 'stubbed' => false, 'error' => 'Xero is not connected.'];
+            if ($invoiceId === '' || $contactId === '') return ['ok' => false, 'linked' => 0, 'skipped' => 0, 'failed' => 0, 'stubbed' => false, 'error' => 'Missing invoice or contact id.'];
+
+            $linked = 0; $skipped = 0; $failed = 0;
+            foreach ($links as $lk) {
+                $billId     = (string)($lk['bill_id'] ?? '');
+                $targetLine = (string)($lk['target_line_id'] ?? '');
+                if ($billId === '' || $targetLine === '') { $failed++; continue; }
+
+                $already = self::linkedSourceLineIds($auth, $billId);   // don't double-link
+                foreach (self::billLineItemIds($auth, $billId) as $srcLine) {
+                    if ($srcLine === '') continue;
+                    if (isset($already[$srcLine])) { $skipped++; continue; }
+                    self::putLinkedTransaction($auth, [
+                        'SourceTransactionID' => $billId,
+                        'SourceLineItemID'    => $srcLine,
+                        'ContactID'           => $contactId,
+                        'TargetTransactionID' => $invoiceId,
+                        'TargetLineItemID'    => $targetLine,
+                    ]) ? $linked++ : $failed++;
+                }
+            }
+            return ['ok' => $failed === 0, 'linked' => $linked, 'skipped' => $skipped, 'failed' => $failed, 'stubbed' => false];
+        } catch (\Throwable $e) {
+            return ['ok' => false, 'linked' => 0, 'skipped' => 0, 'failed' => 0, 'stubbed' => false, 'error' => $e->getMessage()];
+        }
+    }
+
+    /** Line-item ids on one bill (the source lines to link). [] on any error. @return string[] */
+    private static function billLineItemIds(array $auth, string $billId): array
+    {
+        [$code, $body] = XeroOAuth::http('GET', self::API . 'Invoices/' . rawurlencode($billId), [
+            'Authorization: Bearer ' . $auth['access_token'],
+            'Xero-tenant-id: ' . $auth['tenant_id'],
+            'Accept: application/json',
+        ]);
+        if ($code < 200 || $code >= 300) return [];
+        $json  = json_decode($body, true);
+        $items = $json['Invoices'][0]['LineItems'] ?? [];
+        return array_values(array_filter(array_map(fn($l) => (string)($l['LineItemID'] ?? ''), $items)));
+    }
+
+    /** Source line ids already linked for this bill, so we never double-link. @return array<string,true> */
+    private static function linkedSourceLineIds(array $auth, string $billId): array
+    {
+        [$code, $body] = XeroOAuth::http('GET', self::API . 'LinkedTransactions?SourceTransactionID=' . rawurlencode($billId), [
+            'Authorization: Bearer ' . $auth['access_token'],
+            'Xero-tenant-id: ' . $auth['tenant_id'],
+            'Accept: application/json',
+        ]);
+        if ($code < 200 || $code >= 300) return [];
+        $json = json_decode($body, true);
+        $out  = [];
+        foreach ($json['LinkedTransactions'] ?? [] as $lt) {
+            $sid = (string)($lt['SourceLineItemID'] ?? '');
+            if ($sid !== '') $out[$sid] = true;
+        }
+        return $out;
+    }
+
+    /** Create one LinkedTransaction (PUT = create). Returns success. */
+    private static function putLinkedTransaction(array $auth, array $payload): bool
+    {
+        [$code] = XeroOAuth::http('PUT', self::API . 'LinkedTransactions', [
+            'Authorization: Bearer ' . $auth['access_token'],
+            'Xero-tenant-id: ' . $auth['tenant_id'],
+            'Accept: application/json',
+            'Content-Type: application/json',
+        ], json_encode($payload, JSON_UNESCAPED_UNICODE));
         return $code >= 200 && $code < 300;
     }
 
