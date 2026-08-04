@@ -41,7 +41,7 @@
  *   1. Gmail filter → apply label CONFIG.SOURCE_LABEL to supplier-invoice emails.
  *   2. script.google.com → new project bound to that Gmail account → paste this.
  *   3. Fill CONFIG. Run `setup` once (grant perms, create labels), then
- *      `seedProcessed` once, then `installTrigger` once (polls every 1 min).
+ *      `seedProcessed` once, then `installTrigger` once (polls every 5 min).
  *      Use `run` to test by hand.
  */
 
@@ -74,6 +74,7 @@ var CONFIG = {
   ALLOWED_EXT: ['pdf', 'png', 'jpg', 'jpeg', 'webp', 'tif', 'tiff'],
   MIN_BYTES:   8 * 1024,      // skip tiny inline images (signatures/logos)
   MAX_THREADS_PER_RUN: 20,
+  SCAN_DAYS:   3,             // only scan threads active in the last N days (Gmail quota saver)
 };
 
 /** Entry point for the time trigger. */
@@ -86,7 +87,9 @@ function run() {
   // Every source-labeled thread with attachments — deduped at the ATTACHMENT
   // level below, so processed threads are rescanned and new messages in them
   // still go through.
-  var query   = 'label:' + CONFIG.SOURCE_LABEL + ' has:attachment';
+  // Bound the scan to recently-active threads (SCAN_DAYS) so runs stay cheap on
+  // Gmail's daily quota — old threads age out and stop being re-read.
+  var query   = 'label:' + CONFIG.SOURCE_LABEL + ' has:attachment newer_than:' + CONFIG.SCAN_DAYS + 'd';
   var threads = GmailApp.search(query, 0, CONFIG.MAX_THREADS_PER_RUN);
   Logger.log('Scanning %s thread(s)', threads.length);
 
@@ -249,11 +252,13 @@ function ensureLabels_() {
   });
 }
 
-/** Poll every minute (Apps Script's fastest time trigger). Run once. */
+/** Poll every 5 minutes. A 1-minute poll exhausts Gmail's daily quota on a
+ *  consumer account ("Service invoked too many times"), so 5 min is the floor
+ *  that stays reliable. Run once. */
 function installTrigger() {
   ScriptApp.getProjectTriggers().forEach(function (t) {
     if (t.getHandlerFunction() === 'run') ScriptApp.deleteTrigger(t);
   });
-  ScriptApp.newTrigger('run').timeBased().everyMinutes(1).create();
-  Logger.log('Trigger installed: run() every 1 minute.');
+  ScriptApp.newTrigger('run').timeBased().everyMinutes(5).create();
+  Logger.log('Trigger installed: run() every 5 minutes.');
 }
