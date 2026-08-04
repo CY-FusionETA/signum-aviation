@@ -255,13 +255,14 @@ function ensureLabels_() {
   });
 }
 
-/** Poll every 2 minutes. Idle runs now skip already-processed threads, so the
- *  binding limit is the 90-min/day trigger runtime, not Gmail's read quota:
- *  2 min (~720 runs/day) leaves headroom on both. Run once. */
+/** Poll every minute. everyMinutes only accepts 1, 5, 10, 15 or 30, so 1 is the
+ *  fastest available. Idle runs now skip already-processed threads (~6 Gmail
+ *  reads each), so the read quota is no longer the bottleneck; the binding limit
+ *  is the 90-min/day trigger runtime, which short idle runs stay under. Run once. */
 function installTrigger() {
   ScriptApp.getProjectTriggers().forEach(function (t) {
     if (t.getHandlerFunction() === 'run') ScriptApp.deleteTrigger(t);
   });
-  ScriptApp.newTrigger('run').timeBased().everyMinutes(2).create();
-  Logger.log('Trigger installed: run() every 2 minutes.');
+  ScriptApp.newTrigger('run').timeBased().everyMinutes(1).create();
+  Logger.log('Trigger installed: run() every 1 minute.');
 }
