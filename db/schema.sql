@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS leon_trips (
   xero_synced_at TEXT,
   xero_last_error TEXT,
   source_file    TEXT,
+  waived_legs    TEXT,               -- JSON array of route ICAOs that will never have a bill
   created_at     TEXT DEFAULT CURRENT_TIMESTAMP,
   updated_at     TEXT DEFAULT CURRENT_TIMESTAMP,
   UNIQUE (trip_number, entity)

@@ -68,7 +68,7 @@ final class BillReconciler
      * then raise the client invoice once all are approved and all legs are costed.
      * @return array{ok:bool, approved:int, failed:int, error?:string, invoiced?:bool, invoice_number?:string, reason?:string}
      */
-    public static function approveTrip(int $tripId): array
+    public static function approveTrip(int $tripId, bool $force = false): array
     {
         if (!XeroOAuth::isConnected()) return ['ok' => false, 'approved' => 0, 'failed' => 0, 'error' => 'Connect Xero first.'];
         $tenantId = (string)(XeroOAuth::token()['tenant_id'] ?? '');
@@ -99,7 +99,7 @@ final class BillReconciler
         $out = ['ok' => $failed === 0, 'approved' => $approved, 'failed' => $failed];
         if ($errors) $out['error'] = implode('; ', $errors);
         // Only invoice if nothing failed (i.e. every bill is now approved).
-        if ($failed === 0) $out += self::maybeInvoiceTrip($tenantId, $tripId);
+        if ($failed === 0) $out += self::maybeInvoiceTrip($tenantId, $tripId, $force);
         return $out;
     }
 
@@ -108,7 +108,7 @@ final class BillReconciler
      * every route leg is costed, and it isn't already invoiced.
      * @return array{invoiced?:bool, invoice_number?:string, reason?:string}
      */
-    private static function maybeInvoiceTrip(string $tenantId, int $tripId): array
+    private static function maybeInvoiceTrip(string $tenantId, int $tripId, bool $force = false): array
     {
         if (InvoiceRepo::findByTrip($tenantId, $tripId)) return [];
         $trip = TripRepo::findById($tripId);
@@ -118,7 +118,9 @@ final class BillReconciler
         foreach ($bills as $b) {
             if ((string)$b['match_status'] !== 'approved') return ['invoiced' => false, 'reason' => 'waiting for the trip’s other bills to be approved'];
         }
-        if ((CompletenessChecker::check($trip, $bills)['status'] ?? '') !== 'complete') {
+        // The completeness gate is skipped when the user explicitly forces an
+        // invoice for a partial trip ("invoice anyway").
+        if (!$force && (CompletenessChecker::check($trip, $bills)['status'] ?? '') !== 'complete') {
             return ['invoiced' => false, 'reason' => 'some route legs still have no bill'];
         }
         $r = InvoiceService::createForTrip($tripId);

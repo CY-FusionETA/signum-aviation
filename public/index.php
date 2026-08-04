@@ -244,17 +244,25 @@ if ($path === '/bills/assign' && $method === 'POST') {
 }
 if ($path === '/trips/approve' && $method === 'POST') {
     csrf_check();
-    $res = BillReconciler::approveTrip((int)($_POST['trip_id'] ?? 0));
+    $force = !empty($_POST['force']);
+    $res = BillReconciler::approveTrip((int)($_POST['trip_id'] ?? 0), $force);
     if (empty($res['ok']) && empty($res['approved'])) {
         $_SESSION['flash_err'] = 'Approve failed: ' . ($res['error'] ?? 'unknown');
     } elseif (!empty($res['invoiced'])) {
-        $_SESSION['flash_ok'] = "Approved {$res['approved']} bill(s) — trip fully approved, draft client invoice " . ($res['invoice_number'] ?: '') . ' created in Xero.';
+        $_SESSION['flash_ok'] = "Approved {$res['approved']} bill(s) — draft client invoice " . ($res['invoice_number'] ?: '')
+            . ($force ? ' raised for the partial trip' : ' created') . ' in Xero.';
     } else {
         $msg = "Approved {$res['approved']} bill(s).";
         if (!empty($res['failed'])) $msg .= " {$res['failed']} failed: " . ($res['error'] ?? '');
         elseif (!empty($res['reason'])) $msg .= ' Invoice held — ' . $res['reason'] . '.';
         $_SESSION[!empty($res['failed']) ? 'flash_err' : 'flash_ok'] = $msg;
     }
+    redirect('/?view=trips');
+}
+if ($path === '/trips/waive' && $method === 'POST') {
+    csrf_check();
+    $legs = TripRepo::toggleWaivedLeg((int)($_POST['trip_id'] ?? 0), (string)($_POST['airport'] ?? ''));
+    $_SESSION['flash_ok'] = $legs ? 'Legs with no bill expected: ' . implode(', ', $legs) . '.' : 'No legs waived for this trip.';
     redirect('/?view=trips');
 }
 if ($path === '/bills/tag-all' && $method === 'POST') {
@@ -379,8 +387,9 @@ function render_home(string $view): void {
             'flights' => $t['flights_count'] === null ? '' : (int)$t['flights_count'],
             'currency' => (string)$t['currency'], 'source' => (string)$t['source_file'],
             'bills' => $count, 'cost' => $cost,
-            'legs' => (int)$cp['legs'], 'covered' => count($cp['covered']),
+            'legs' => (int)$cp['legs'], 'covered' => count($cp['covered']) + count($cp['waived'] ?? []),
             'missing' => implode(', ', $cp['missing']),
+            'missing_legs' => array_values($cp['missing']), 'waived_legs' => array_values($cp['waived'] ?? []),
             'approved' => $approved, 'invoiced' => $inv ? true : false,
             'invoice_number' => $inv ? (string)$inv['xero_invoice_number'] : '',
             'created' => (string)($t['created_at'] ?? ''), 'updated' => (string)($t['updated_at'] ?? ''),
@@ -926,6 +935,18 @@ const rowsEl = $('#rows'); if (!rowsEl) { /* not on trips view */ } else {
     f.innerHTML = `<input type="hidden" name="csrf" value="${esc(CSRF)}"><input type="hidden" name="trip_id" value="${id}">`;
     document.body.appendChild(f); f.submit();
   }
+  function invoiceAnyway(id){
+    const t = TRIPS.find(x=>x.id===id); if(!t) return;
+    if (!confirm(`Invoice trip ${t.trip} now, before every leg has a bill?\n\nMissing: ${t.missing||'—'}\n\nAny un-approved bills are approved first, then the client invoice is raised from whatever costs are in. You can't easily add the missing costs to this invoice afterwards.`)) return;
+    const f=document.createElement('form'); f.method='post'; f.action=BASE+'/trips/approve';
+    f.innerHTML = `<input type="hidden" name="csrf" value="${esc(CSRF)}"><input type="hidden" name="trip_id" value="${id}"><input type="hidden" name="force" value="1">`;
+    document.body.appendChild(f); f.submit();
+  }
+  function waiveLeg(id, airport){
+    const f=document.createElement('form'); f.method='post'; f.action=BASE+'/trips/waive';
+    f.innerHTML = `<input type="hidden" name="csrf" value="${esc(CSRF)}"><input type="hidden" name="trip_id" value="${id}"><input type="hidden" name="airport" value="${esc(airport)}">`;
+    document.body.appendChild(f); f.submit();
+  }
 
   rowsEl.addEventListener('change', e => {
     if (!e.target.classList.contains('pick')) return;
@@ -959,15 +980,24 @@ const rowsEl = $('#rows'); if (!rowsEl) { /* not on trips view */ } else {
     const legs = (t.route||'').split(' - ').filter(Boolean).map(a=>`<span class="leg">${esc(a)}</span>`).join('<span class="arr">→</span>');
     const [c,l] = COST[t.cost] || ['gray','None'];
     const cover = t.legs>0 ? ` <span class="mono">${t.covered}/${t.legs} legs</span>` : '';
+    const miss = t.missing_legs||[], wv = t.waived_legs||[];
+    const chips = (arr,cls) => arr.map(a=>`<button type="button" class="chipbtn ${cls}" data-waive="${esc(a)}" title="${cls==='miss'?'Mark this leg ‘no bill expected’':'Un-waive — require a bill again'}">${esc(a)}${cls==='wv'?' ✕':''}</button>`).join(' ');
+    const missBlock = miss.length ? `<div class="drow"><span>No bill at</span><b>${chips(miss,'miss')}</b></div>` : '';
+    const wvBlock   = wv.length   ? `<div class="drow"><span>No bill expected</span><b>${chips(wv,'wv')}</b></div>` : '';
+    const waiveHint = (miss.length||wv.length) ? `<div class="mhint">Click a leg to toggle whether a supplier bill is expected there.</div>` : '';
     $('#mbody').innerHTML =
       `<div class="legs">${legs||'—'}</div>` +
       row('Client', t.client||'—') + row('Aircraft', t.aircraft) +
       row('Dates', dates(t)) + row('Flights', t.flights) +
       `<div class="drow"><span>Bills matched</span><b>${t.bills>0 ? t.bills : '—'}</b></div>` +
       `<div class="drow"><span>Costing</span><b><span class="pill ${c}">${esc(l)}</span>${cover}</b></div>` +
-      (t.cost==='partial' && t.missing ? `<div class="drow"><span>Missing a bill at</span><b>${esc(t.missing)}</b></div>` : '') +
+      missBlock + wvBlock + waiveHint +
       row('Source file', t.source) + row('Imported', t.created) + row('Updated', t.updated) +
-      `<div class="mfoot"><button type="button" class="btn danger sm" id="mdel">Delete from master list</button></div>`;
+      `<div class="mfoot">` +
+        (!t.invoiced && t.cost==='partial' ? `<button type="button" class="btn sm" id="minv" title="Raise the client invoice now, before every leg has a bill">Invoice anyway</button>` : '') +
+        `<button type="button" class="btn danger sm" id="mdel">Delete from master list</button></div>`;
+    $('#mbody').querySelectorAll('[data-waive]').forEach(b => b.addEventListener('click', () => waiveLeg(t.id, b.dataset.waive)));
+    const minv = $('#minv'); if (minv) minv.addEventListener('click', () => { $('#modal').hidden = true; invoiceAnyway(t.id); });
     $('#mdel').addEventListener('click', () => { $('#modal').hidden = true; deleteTrip(t.id); });
     $('#modal').hidden = false;
   }
@@ -1124,7 +1154,13 @@ td.nowrap{white-space:nowrap;color:var(--mut)}
 th.actcol,td.actcol{width:38px;padding-left:0;padding-right:8px;text-align:right}
 .del{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;padding:0;background:transparent;border:1px solid transparent;border-radius:7px;color:var(--gray);cursor:pointer}
 .del:hover{color:var(--red);background:#fef2f2;border-color:#f3c2c2}
-.mfoot{display:flex;justify-content:flex-end;margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
+.mfoot{display:flex;justify-content:flex-end;gap:8px;margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
+.chipbtn{font-family:ui-monospace,monospace;font-size:12px;padding:2px 8px;border-radius:6px;border:1px solid transparent;cursor:pointer}
+.chipbtn.miss{background:#fef3c7;color:#92400e;border-color:#fde68a}
+.chipbtn.miss:hover{background:#fde68a}
+.chipbtn.wv{background:#eef2ff;color:#3538cd;border-color:#c7d2fe}
+.chipbtn.wv:hover{background:#e0e7ff}
+.mhint{font-size:11.5px;color:var(--mut);padding:7px 0 2px}
 
 .reschips{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
 .chip{font-size:12px;padding:3px 10px;border-radius:20px;background:#f2f4f7;color:#475467}

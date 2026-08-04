@@ -18,6 +18,9 @@ $add = [
         'base_currency' => 'TEXT',
         'base_total'    => 'REAL',
     ],
+    'leon_trips' => [
+        'waived_legs' => 'TEXT',
+    ],
 ];
 foreach ($add as $table => $cols) {
     $have = array_column(Db::all("PRAGMA table_info({$table})"), 'name');

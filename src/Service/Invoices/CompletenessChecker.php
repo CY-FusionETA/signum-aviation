@@ -16,18 +16,23 @@ namespace App\Service\Invoices;
  */
 final class CompletenessChecker
 {
-    /** @return array{status:string, legs:int, covered:array, missing:array} */
+    /** @return array{status:string, legs:int, covered:array, missing:array, waived:array} */
     public static function check(array $trip, array $bills): array
     {
         $route = self::airports((string)($trip['route'] ?? ''));
+
+        // Legs the user has marked "no bill expected" — they never block the invoice.
+        $waivedSet = \App\Repo\TripRepo::waivedLegs($trip);
 
         // One uppercase blob of everything on the tagged bills (extracted airport + description).
         $blob = '';
         foreach ($bills as $b) $blob .= ' ' . strtoupper((string)($b['ex_airport'] ?? '') . ' ' . (string)($b['description'] ?? ''));
 
-        $covered = $missing = [];
+        $covered = $missing = $waived = [];
         foreach ($route as $icao) {
-            (strpos($blob, $icao) !== false) ? $covered[] = $icao : $missing[] = $icao;
+            if (strpos($blob, $icao) !== false)       $covered[] = $icao;
+            elseif (in_array($icao, $waivedSet, true)) $waived[]  = $icao;
+            else                                       $missing[] = $icao;
         }
 
         return [
@@ -35,6 +40,7 @@ final class CompletenessChecker
             'legs'    => count($route),
             'covered' => $covered,
             'missing' => $missing,
+            'waived'  => $waived,
         ];
     }
 

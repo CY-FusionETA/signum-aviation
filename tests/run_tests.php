@@ -299,6 +299,34 @@ check('  → ZZZZ not counted as a leg', $cc5['legs'], 1);
 // The DEMO trip 99751 (route VHHH) with its tagged VHHH bill → complete.
 check('readyTrips carries completeness', $ready[0]['complete']['status'] ?? '', 'complete');
 
+// --- 11. Partial-trip handling: waive legs + force override ----------
+// Waiving the un-billed legs drops them from "missing" and completes the trip.
+$ccw = $CC::check(
+    ['route' => 'VHHH - RJTT - RKSI', 'waived_legs' => '["RJTT","RKSI"]'],
+    [['ex_airport'=>'VHHH','description'=>'Handling at VHHH']]
+);
+check('waived legs no longer block → complete', $ccw['status'], 'complete');
+check('  → waived legs reported', $ccw['waived'], ['RJTT','RKSI']);
+check('  → nothing missing after waive', $ccw['missing'], []);
+check('  → covered still only the billed leg', $ccw['covered'], ['VHHH']);
+
+// Partial waive: one leg still un-waived and unbilled → still gaps.
+$ccw2 = $CC::check(['route' => 'VHHH - RJTT - RKSI', 'waived_legs' => '["RJTT"]'],
+    [['ex_airport'=>'VHHH','description'=>'Handling at VHHH']]);
+check('one leg still un-waived + unbilled → gaps', $ccw2['status'], 'gaps');
+check('  → only the un-waived leg missing', $ccw2['missing'], ['RKSI']);
+
+// TripRepo waive parsing (JSON, comma, empty) + persisted toggle.
+$TR = '\App\Repo\TripRepo';
+check('waivedLegs parses JSON array', $TR::waivedLegs(['waived_legs'=>'["EGGW","VHHH"]']), ['EGGW','VHHH']);
+check('waivedLegs parses comma string, uppercased', $TR::waivedLegs(['waived_legs'=>'eggw, vhhh']), ['EGGW','VHHH']);
+check('waivedLegs empty → []', $TR::waivedLegs(['waived_legs'=>'']), []);
+check('waivedLegs missing key → []', $TR::waivedLegs([]), []);
+$tw = null; foreach (TripRepo::all() as $tt) if ($tt['trip_number']==='99751') $tw = $tt;
+check('toggle adds a waived leg', $TR::toggleWaivedLeg((int)$tw['id'], 'RJTT'), ['RJTT']);
+check('  → persisted on the row', $TR::waivedLegs(TripRepo::findById((int)$tw['id'])), ['RJTT']);
+check('toggle again removes it', $TR::toggleWaivedLeg((int)$tw['id'], 'RJTT'), []);
+
 echo "\n" . str_repeat('=', 40) . "\n";
 printf("TOTAL: %d passed, %d failed\n", $pass, $fail);
 exit($fail === 0 ? 0 : 1);

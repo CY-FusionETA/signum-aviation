@@ -54,6 +54,43 @@ final class TripRepo
         return Db::all("SELECT * FROM leon_trips ORDER BY start_date DESC, trip_number DESC");
     }
 
+    /** Route legs (ICAOs) a user has marked "no bill expected" on this trip. @return string[] */
+    public static function waivedLegs($trip): array
+    {
+        $raw = is_array($trip) ? ($trip['waived_legs'] ?? '') : $trip;
+        if (is_array($raw)) $list = $raw;
+        else {
+            $raw = trim((string)$raw);
+            if ($raw === '') return [];
+            $list = json_decode($raw, true);
+            if (!is_array($list)) $list = preg_split('/\s*,\s*/', $raw) ?: [];
+        }
+        $out = [];
+        foreach ($list as $a) {
+            $a = strtoupper(trim((string)$a));
+            if ($a !== '' && !in_array($a, $out, true)) $out[] = $a;
+        }
+        return $out;
+    }
+
+    /**
+     * Add or remove one route leg from a trip's "no bill expected" set.
+     * @return string[] the new waived-leg list.
+     */
+    public static function toggleWaivedLeg(int $id, string $icao): array
+    {
+        $trip = self::findById($id);
+        if (!$trip) return [];
+        $icao = strtoupper(trim($icao));
+        $legs = self::waivedLegs($trip);
+        $legs = in_array($icao, $legs, true)
+            ? array_values(array_filter($legs, fn($l) => $l !== $icao))
+            : array_merge($legs, [$icao]);
+        Db::q("UPDATE leon_trips SET waived_legs = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            [json_encode(array_values($legs)), $id]);
+        return $legs;
+    }
+
     /** Remove trips from the master list by id (local only). Returns rows removed. */
     public static function deleteIds(array $ids): int
     {
