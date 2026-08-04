@@ -84,14 +84,15 @@ function run() {
   var errored   = GmailApp.getUserLabelByName(CONFIG.ERROR_LABEL);
   var props     = PropertiesService.getScriptProperties();
 
-  // Every source-labeled thread with attachments — deduped at the ATTACHMENT
-  // level below, so processed threads are rescanned and new messages in them
-  // still go through.
-  // Bound the scan to recently-active threads (SCAN_DAYS) so runs stay cheap on
-  // Gmail's daily quota — old threads age out and stop being re-read.
-  var query   = 'label:' + CONFIG.SOURCE_LABEL + ' has:attachment newer_than:' + CONFIG.SCAN_DAYS + 'd';
+  // Only NEW invoice threads: exclude ones already tagged processed and bound to
+  // the last SCAN_DAYS. Once a thread succeeds it gets the processed label and is
+  // never re-read again, so idle runs return nothing and barely touch Gmail's
+  // daily quota — the read cost tracks how many invoices actually arrive, not how
+  // often we poll. (Re-testing the same invoice → send it as a NEW email.)
+  var query   = 'label:' + CONFIG.SOURCE_LABEL + ' -label:' + CONFIG.PROCESSED_LABEL +
+                ' has:attachment newer_than:' + CONFIG.SCAN_DAYS + 'd';
   var threads = GmailApp.search(query, 0, CONFIG.MAX_THREADS_PER_RUN);
-  Logger.log('Scanning %s thread(s)', threads.length);
+  if (threads.length) Logger.log('Scanning %s new thread(s)', threads.length);
 
   threads.forEach(function (thread) {
     var anyProcessed = false, anyFailed = false;
@@ -215,8 +216,9 @@ function dropFile_(att) {
  */
 function seedProcessed() {
   ensureLabels_();
-  var props   = PropertiesService.getScriptProperties();
-  var threads = GmailApp.search('label:' + CONFIG.SOURCE_LABEL + ' has:attachment', 0, 200);
+  var props     = PropertiesService.getScriptProperties();
+  var processed = GmailApp.getUserLabelByName(CONFIG.PROCESSED_LABEL);
+  var threads   = GmailApp.search('label:' + CONFIG.SOURCE_LABEL + ' has:attachment', 0, 200);
   var n = 0;
   threads.forEach(function (thread) {
     thread.getMessages().forEach(function (msg) {
@@ -226,6 +228,7 @@ function seedProcessed() {
         n++;
       });
     });
+    thread.addLabel(processed);   // exclude it from future scans (quota saver)
   });
   Logger.log('Seeded %s existing attachment(s) as already-processed. Send a NEW email to test.', n);
 }
