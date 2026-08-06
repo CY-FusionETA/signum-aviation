@@ -11,6 +11,7 @@ require __DIR__ . '/../src/bootstrap.php';
 use App\Settings;
 use App\Repo\TripRepo;
 use App\Repo\BillRepo;
+use App\Service\Auth\AccessLog;
 use App\Repo\InvoiceRepo;
 use App\Service\Leon\LeonProcessor;
 use App\Service\Bills\BillReconciler;
@@ -74,8 +75,10 @@ function normalize_files($f): array {
 // --- auth -----------------------------------------------------------
 if ($path === '/login' && $method === 'POST') {
     if (admin_check($_POST['email'] ?? '', $_POST['password'] ?? '')) {
+        AccessLog::record(admin_email(), 'success');
         $_SESSION['authed'] = true; $_SESSION['email'] = admin_email(); redirect('/');
     }
+    AccessLog::record((string)($_POST['email'] ?? ''), 'failed');
     $_SESSION['flash_err'] = 'Wrong email or password.'; redirect('/login');
 }
 // One-click sign-in for the admin, for convenience on a trusted machine.
@@ -85,8 +88,10 @@ if ($path === '/login' && $method === 'POST') {
 if ($path === '/login/quick' && $method === 'POST') {
     csrf_check();
     if (quick_login_enabled() && admin_configured()) {
+        AccessLog::record(admin_email(), 'success');
         $_SESSION['authed'] = true; $_SESSION['email'] = admin_email(); redirect('/');
     }
+    AccessLog::record(admin_email(), 'failed');
     $_SESSION['flash_err'] = 'Quick sign-in is disabled.'; redirect('/login');
 }
 if ($path === '/logout') { session_destroy(); redirect('/login'); }
@@ -282,7 +287,7 @@ if ($path === '/invoices/create' && $method === 'POST') {
     redirect('/?view=invoices');
 }
 
-$view = in_array($_GET['view'] ?? '', ['dashboard', 'trips', 'bills', 'invoices', 'settings'], true) ? $_GET['view'] : 'dashboard';
+$view = in_array($_GET['view'] ?? '', ['dashboard', 'trips', 'bills', 'invoices', 'settings', 'access'], true) ? $_GET['view'] : 'dashboard';
 render_home($view);
 
 // ====================================================================
@@ -302,6 +307,7 @@ function icon(string $n): string {
         'bills'     => '<path d="M6 2h9l3 3v17l-3-2-3 2-3-2-3 2V2z"/><path d="M9 7h6M9 11h6M9 15h4"/>',
         'invoice'   => '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h6"/>',
         'settings'  => '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 7 19.4a1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0-1.1-2.7H1a2 2 0 1 1 0-4h.1A1.6 1.6 0 0 0 2.6 7a1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H7a1.6 1.6 0 0 0 1-1.5V1a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 2.7 1.1 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V7a1.6 1.6 0 0 0 1.5 1H23a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/>',
+        'lock'      => '<rect x="4" y="10.5" width="16" height="10.5" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/>',
     ][$n] ?? '';
     return '<svg class="nicon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' . $p . '</svg>';
 }
@@ -327,8 +333,8 @@ function render_login(): void {
         <form method="post" action="<?= e(base()) ?>/login/quick" id="quickForm">
           <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>">
           <button class="btn block quick" type="submit" id="quickBtn">
-            <span class="av"><?= e(mb_substr(admin_label(), 0, 1)) ?></span>
-            Continue as <?= e(admin_label()) ?>
+            <span class="av">D</span>
+            Continue as Demo
           </button>
         </form>
         <script>
@@ -395,7 +401,7 @@ function render_home(string $view): void {
             'created' => (string)($t['created_at'] ?? ''), 'updated' => (string)($t['updated_at'] ?? ''),
         ];
     }
-    $titles = ['dashboard' => 'Dashboard', 'trips' => 'Trips', 'bills' => 'Bills', 'invoices' => 'Invoices', 'settings' => 'Settings'];
+    $titles = ['dashboard' => 'Dashboard', 'trips' => 'Trips', 'bills' => 'Bills', 'invoices' => 'Invoices', 'settings' => 'Settings', 'access' => 'Access log'];
     $email = (string)($_SESSION['email'] ?? admin_email());
     $initial = strtoupper(substr($email, 0, 1) ?: 'S');
     ?><!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -410,10 +416,11 @@ function render_home(string $view): void {
         <a href="<?= e(base()) ?>/?view=bills" class="<?= $view==='bills'?'active':'' ?>"><?= icon('bills') ?><span class="lbl">Bills</span></a>
         <a href="<?= e(base()) ?>/?view=invoices" class="<?= $view==='invoices'?'active':'' ?>"><?= icon('invoice') ?><span class="lbl">Invoices</span></a>
         <a href="<?= e(base()) ?>/?view=settings" class="<?= $view==='settings'?'active':'' ?>"><?= icon('settings') ?><span class="lbl">Settings</span></a>
+        <a href="<?= e(base()) ?>/?view=access" class="<?= $view==='access'?'active':'' ?>"><?= icon('lock') ?><span class="lbl">Access log</span></a>
       </nav>
       <div class="suser">
         <span class="av"><?= e($initial) ?></span>
-        <span class="uinfo"><b><?= e($email ?: 'admin') ?></b><small>Signum Aviation</small></span>
+        <span class="uinfo"><b>Signum Aviation</b><small><?= e($email) ?></small></span>
         <a class="logout" href="<?= e(base()) ?>/logout" title="Sign out">⏻</a>
       </div>
     </aside>
@@ -432,6 +439,7 @@ function render_home(string $view): void {
           elseif ($view === 'bills')     render_bills($connected, $tenant, $tenantId);
           elseif ($view === 'invoices')  render_invoices($connected, $tenant, $tenantId);
           elseif ($view === 'settings')  render_settings($connected, $tenant);
+          elseif ($view === 'access')    render_access_log();
           else                           render_dashboard($stat, $js, $connected, $tenant);
         ?>
       </main>
@@ -453,6 +461,40 @@ function render_home(string $view): void {
     <script><?= app_js() ?></script>
     <script><?= dz_js() ?></script>
     </body></html><?php
+}
+
+function render_access_log(): void {
+    $s    = AccessLog::stats();
+    $rows = AccessLog::rows(200);
+    ?>
+    <section class="tiles" style="grid-template-columns:repeat(5,1fr)">
+      <div class="tile"><div class="tnum"><?= $s['day'] ?></div><div class="tlbl">Sign-ins (24h)</div></div>
+      <div class="tile"><div class="tnum"><?= $s['total'] ?></div><div class="tlbl">Total recorded</div></div>
+      <div class="tile"><div class="tnum"><?= $s['accounts'] ?></div><div class="tlbl">Distinct accounts</div></div>
+      <div class="tile"><div class="tnum"><?= $s['ips'] ?></div><div class="tlbl">Distinct IPs</div></div>
+      <div class="tile"><div class="tnum"<?= $s['failed'] ? ' style="color:#b42318"' : '' ?>><?= $s['failed'] ?></div><div class="tlbl">Failed attempts</div></div>
+    </section>
+    <div class="card">
+      <p class="muted" style="margin:0 0 12px">Every sign-in: which account, from where, on what device. Visible to you only · times are UTC.</p>
+      <table class="grid"><thead><tr><th>When</th><th>Account</th><th>Result</th><th>IP address</th><th>Location</th><th>Device</th></tr></thead><tbody>
+      <?php if (!$rows): ?>
+        <tr><td colspan="6" class="muted">No sign-ins recorded yet — they appear here as people sign in.</td></tr>
+      <?php else: foreach ($rows as $r):
+        $d   = AccessLog::device((string)$r['user_agent']);
+        $loc = trim(((string)$r['city']) . ((($r['city'] ?? '') !== '' && ($r['country'] ?? '') !== '') ? ', ' : '') . (string)$r['country']);
+      ?>
+        <tr>
+          <td class="nowrap mono"><?= e((string)$r['ts']) ?></td>
+          <td><?= ($r['email'] ?? '') !== '' ? e((string)$r['email']) : '<span class="muted">—</span>' ?></td>
+          <td><span class="pill <?= (string)$r['result'] === 'success' ? 'green' : 'amber' ?>"><?= e((string)$r['result']) ?></span></td>
+          <td class="mono"><?= e((string)$r['ip']) ?></td>
+          <td><?= $loc !== '' ? e($loc) : '<span class="muted">—</span>' ?><?= ($r['isp'] ?? '') !== '' ? '<div class="muted small">' . e((string)$r['isp']) . '</div>' : '' ?></td>
+          <td class="nowrap"><?= e($d['browser'] . ' · ' . $d['os']) ?><div class="muted small"><?= e($d['kind']) ?></div></td>
+        </tr>
+      <?php endforeach; endif; ?>
+      </tbody></table>
+    </div>
+    <?php
 }
 
 function render_dashboard(array $stat, array $rows, bool $connected, string $tenant): void {

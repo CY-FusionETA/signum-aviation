@@ -85,6 +85,21 @@ CREATE TABLE IF NOT EXISTS xero_bills (
 );
 CREATE INDEX IF NOT EXISTS idx_xero_bills_status ON xero_bills (match_status);
 
+-- Every sign-in attempt: who, from where, on what device. Geo columns are
+-- best-effort (blank when the lookup can't run). Superadmin-only view.
+CREATE TABLE IF NOT EXISTS access_log (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts         TEXT DEFAULT CURRENT_TIMESTAMP,   -- UTC
+  email      TEXT,                             -- attempted account ('' if unknown)
+  result     TEXT,                             -- 'success' | 'failed'
+  ip         TEXT,
+  user_agent TEXT,
+  city       TEXT DEFAULT '',
+  country    TEXT DEFAULT '',
+  isp        TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_access_log_ts ON access_log (ts);
+
 -- Module 5: client sales invoices raised from a trip's tagged bills.
 -- One row per trip invoiced (keyed by tenant + trip).
 CREATE TABLE IF NOT EXISTS trip_invoices (

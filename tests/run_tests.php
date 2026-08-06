@@ -8,6 +8,7 @@ use App\Settings;
 use App\Repo\TripRepo;
 use App\Service\Leon\LeonParser;
 use App\Service\Leon\LeonProcessor;
+use App\Service\Auth\AccessLog;
 
 $pass = 0; $fail = 0;
 function check(string $label, $got, $want) {
@@ -326,6 +327,39 @@ $tw = null; foreach (TripRepo::all() as $tt) if ($tt['trip_number']==='99751') $
 check('toggle adds a waived leg', $TR::toggleWaivedLeg((int)$tw['id'], 'RJTT'), ['RJTT']);
 check('  → persisted on the row', $TR::waivedLegs(TripRepo::findById((int)$tw['id'])), ['RJTT']);
 check('toggle again removes it', $TR::toggleWaivedLeg((int)$tw['id'], 'RJTT'), []);
+
+// --- 12. Access log: device parsing, geo/IP safety, stats -----------
+$mac = AccessLog::device('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36');
+check('device: Chrome on macOS desktop', $mac, ['browser'=>'Chrome','os'=>'macOS','kind'=>'Desktop']);
+$iph = AccessLog::device('Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1');
+check('device: Safari on iOS mobile', $iph, ['browser'=>'Safari','os'=>'iOS','kind'=>'Mobile']);
+$win = AccessLog::device('Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:127.0) Gecko/20100101 Firefox/127.0');
+check('device: Firefox on Windows', $win['browser'].'/'.$win['os'], 'Firefox/Windows');
+$edge = AccessLog::device('Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36 Edg/126.0');
+check('device: Edge wins over Chrome token', $edge['browser'], 'Edge');
+check('device: empty UA → Unknown/Unknown', AccessLog::device('')['browser'], 'Unknown');
+
+// Private/invalid IPs never trigger a lookup — always blank.
+check('geoip: private IP → blank', AccessLog::geoip('10.0.0.5'), ['city'=>'','country'=>'','isp'=>'']);
+check('geoip: empty IP → blank', AccessLog::geoip(''), ['city'=>'','country'=>'','isp'=>'']);
+
+// clientIp prefers the first PUBLIC X-Forwarded-For entry over private hops.
+$_SERVER['HTTP_X_FORWARDED_FOR'] = '10.0.0.1, 203.0.113.9, 70.1.2.3';
+$_SERVER['REMOTE_ADDR'] = '10.0.0.1';
+check('clientIp: first public XFF entry', AccessLog::clientIp(), '203.0.113.9');
+unset($_SERVER['HTTP_X_FORWARDED_FOR']);
+check('clientIp: falls back to REMOTE_ADDR', AccessLog::clientIp(), '10.0.0.1');
+
+// Stats aggregate success/failed, distinct accounts + IPs.
+Db::insert('access_log', ['email'=>'a@x.com','result'=>'success','ip'=>'1.1.1.1','user_agent'=>'']);
+Db::insert('access_log', ['email'=>'a@x.com','result'=>'success','ip'=>'1.1.1.2','user_agent'=>'']);
+Db::insert('access_log', ['email'=>'b@x.com','result'=>'failed','ip'=>'1.1.1.1','user_agent'=>'']);
+$as = AccessLog::stats();
+check('stats: total recorded', $as['total'], 3);
+check('stats: distinct accounts', $as['accounts'], 2);
+check('stats: distinct IPs', $as['ips'], 2);
+check('stats: failed attempts', $as['failed'], 1);
+check('stats: 24h success count', $as['day'], 2);
 
 echo "\n" . str_repeat('=', 40) . "\n";
 printf("TOTAL: %d passed, %d failed\n", $pass, $fail);
