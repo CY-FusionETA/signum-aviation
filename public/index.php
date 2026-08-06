@@ -12,6 +12,7 @@ use App\Settings;
 use App\Repo\TripRepo;
 use App\Repo\BillRepo;
 use App\Service\Auth\AccessLog;
+use App\Service\Auth\Users;
 use App\Repo\InvoiceRepo;
 use App\Service\Leon\LeonProcessor;
 use App\Service\Bills\BillReconciler;
@@ -40,22 +41,23 @@ function csrf_token(): string { if (empty($_SESSION['csrf'])) $_SESSION['csrf'] 
 function csrf_check(): void { if (!hash_equals($_SESSION['csrf'] ?? '', $_POST['csrf'] ?? '')) { http_response_code(419); exit('Bad CSRF token.'); } }
 function is_authed(): bool { return !empty($_SESSION['authed']); }
 
-/** Admin identity: DB (app_settings) wins, else config.php. */
+/** Legacy single-admin identity, kept as a fallback for un-migrated installs. */
 function admin_email(): string { return strtolower(trim((string)Settings::get('auth.email', cfg('app.admin_email', '')))); }
-function admin_hash(): string  { return (string)Settings::get('auth.password_hash', cfg('app.admin_password_hash', '')); }
-function admin_configured(): bool { return admin_email() !== '' && admin_hash() !== ''; }
-/** One-click admin sign-in on the login page. Bypasses the password — see /login/quick. */
+function admin_configured(): bool { return Users::count() > 0 || (admin_email() !== '' && (string)Settings::get('auth.password_hash', cfg('app.admin_password_hash', '')) !== ''); }
+/** One-click sign-in on the login page. Bypasses the password — see /login/quick. */
 function quick_login_enabled(): bool { return (string)Settings::get('auth.quick_login', '0') === '1'; }
-/** Short display name for the quick-login button, e.g. "Simon" from simon@fusioneta.com. */
-function admin_label(): string {
-    $n = (string)Settings::get('auth.display_name', '');
-    if ($n !== '') return $n;
-    $local = explode('@', admin_email())[0] ?? '';
-    return $local === '' ? 'Admin' : ucfirst(preg_replace('/[._-].*$/', '', $local));
-}
-function admin_check(string $email, string $pass): bool {
-    if (!admin_configured()) return false;
-    return hash_equals(admin_email(), strtolower(trim($email))) && password_verify($pass, admin_hash());
+
+/** Who is signed in right now, and what they may see. */
+function current_email(): string { return (string)($_SESSION['email'] ?? ''); }
+function current_role(): string  { return (string)($_SESSION['role'] ?? Users::USER); }
+function can_view_access_log(): bool { return is_authed() && Users::canViewAccessLog(current_role()); }
+
+/** Start the session for a verified user row. */
+function sign_in(array $user): void {
+    session_regenerate_id(true);          // new session id on privilege change
+    $_SESSION['authed'] = true;
+    $_SESSION['email']  = (string)$user['email'];
+    $_SESSION['role']   = (string)$user['role'];
 }
 
 /** Flatten PHP's $_FILES structure (single or multiple) into a list of file rows. */
@@ -74,24 +76,30 @@ function normalize_files($f): array {
 
 // --- auth -----------------------------------------------------------
 if ($path === '/login' && $method === 'POST') {
-    if (admin_check($_POST['email'] ?? '', $_POST['password'] ?? '')) {
-        AccessLog::record(admin_email(), 'success');
-        $_SESSION['authed'] = true; $_SESSION['email'] = admin_email(); redirect('/');
+    $user = Users::check((string)($_POST['email'] ?? ''), (string)($_POST['password'] ?? ''));
+    if ($user) {
+        AccessLog::record((string)$user['email'], 'success');
+        sign_in($user);
+        redirect('/');
     }
     AccessLog::record((string)($_POST['email'] ?? ''), 'failed');
     $_SESSION['flash_err'] = 'Wrong email or password.'; redirect('/login');
 }
-// One-click sign-in for the admin, for convenience on a trusted machine.
+// One-click sign-in for the demo account, for convenience on a trusted machine.
 // NOTE: while this is on, ANYONE who loads /login can click through and get in —
 // it is a deliberate bypass of the password. Turn it off with:
 //   php cli/quick-login.php off
+// It can only ever sign in a non-superadmin: a public password bypass must not
+// reach the access log. See Users::canQuickLogin().
 if ($path === '/login/quick' && $method === 'POST') {
     csrf_check();
-    if (quick_login_enabled() && admin_configured()) {
-        AccessLog::record(admin_email(), 'success');
-        $_SESSION['authed'] = true; $_SESSION['email'] = admin_email(); redirect('/');
+    $demo = Users::quickLoginUser();
+    if (quick_login_enabled() && Users::canQuickLogin($demo)) {
+        AccessLog::record((string)$demo['email'], 'success');
+        sign_in($demo);
+        redirect('/');
     }
-    AccessLog::record(admin_email(), 'failed');
+    AccessLog::record((string)($demo['email'] ?? ''), 'failed');
     $_SESSION['flash_err'] = 'Quick sign-in is disabled.'; redirect('/login');
 }
 if ($path === '/logout') { session_destroy(); redirect('/login'); }
@@ -288,6 +296,10 @@ if ($path === '/invoices/create' && $method === 'POST') {
 }
 
 $view = in_array($_GET['view'] ?? '', ['dashboard', 'trips', 'bills', 'invoices', 'settings', 'access'], true) ? $_GET['view'] : 'dashboard';
+// The access log is superadmin-only. Anyone else asking for it by URL gets the
+// dashboard — the link is hidden for them, so a hand-typed ?view=access is the
+// only way to land here.
+if ($view === 'access' && !can_view_access_log()) $view = 'dashboard';
 render_home($view);
 
 // ====================================================================
@@ -328,7 +340,7 @@ function render_login(): void {
         <input type="password" name="password" id="f_pass" autocomplete="current-password">
         <button class="btn primary block">Sign in</button>
       </form>
-      <?php if (quick_login_enabled() && admin_configured()): ?>
+      <?php $demo = Users::quickLoginUser(); if (quick_login_enabled() && Users::canQuickLogin($demo)): ?>
         <div class="quickrow"><span>or</span></div>
         <form method="post" action="<?= e(base()) ?>/login/quick" id="quickForm">
           <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>">
@@ -341,7 +353,7 @@ function render_login(): void {
           // Show the credentials as "filled in" for feedback, then sign in server-side.
           // The real password is never sent to the browser.
           document.getElementById('quickBtn').addEventListener('click', function () {
-            document.getElementById('f_email').value = <?= json_encode(admin_email()) ?>;
+            document.getElementById('f_email').value = <?= json_encode((string)$demo['email']) ?>;
             document.getElementById('f_pass').value  = '••••••••••••';
           });
         </script>
@@ -416,7 +428,9 @@ function render_home(string $view): void {
         <a href="<?= e(base()) ?>/?view=bills" class="<?= $view==='bills'?'active':'' ?>"><?= icon('bills') ?><span class="lbl">Bills</span></a>
         <a href="<?= e(base()) ?>/?view=invoices" class="<?= $view==='invoices'?'active':'' ?>"><?= icon('invoice') ?><span class="lbl">Invoices</span></a>
         <a href="<?= e(base()) ?>/?view=settings" class="<?= $view==='settings'?'active':'' ?>"><?= icon('settings') ?><span class="lbl">Settings</span></a>
+        <?php if (can_view_access_log()): ?>
         <a href="<?= e(base()) ?>/?view=access" class="<?= $view==='access'?'active':'' ?>"><?= icon('lock') ?><span class="lbl">Access log</span></a>
+        <?php endif; ?>
       </nav>
       <div class="suser">
         <span class="av"><?= e($initial) ?></span>

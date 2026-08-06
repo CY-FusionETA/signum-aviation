@@ -85,6 +85,18 @@ CREATE TABLE IF NOT EXISTS xero_bills (
 );
 CREATE INDEX IF NOT EXISTS idx_xero_bills_status ON xero_bills (match_status);
 
+-- Sign-in accounts. Replaces the single auth.email/auth.password_hash pair in
+-- app_settings (still read as a fallback, and migrated in by db/migrate.php).
+-- role: 'superadmin' sees everything incl. the access log; 'user' does not.
+CREATE TABLE IF NOT EXISTS users (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  email         TEXT NOT NULL UNIQUE,       -- always stored lowercased
+  password_hash TEXT NOT NULL,              -- bcrypt; plaintext is never stored
+  role          TEXT NOT NULL DEFAULT 'user',
+  display_name  TEXT DEFAULT '',
+  created_at    TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Every sign-in attempt: who, from where, on what device. Geo columns are
 -- best-effort (blank when the lookup can't run). Superadmin-only view.
 CREATE TABLE IF NOT EXISTS access_log (

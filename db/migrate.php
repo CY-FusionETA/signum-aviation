@@ -4,6 +4,7 @@ declare(strict_types=1);
 require __DIR__ . '/../src/bootstrap.php';
 
 use App\Db;
+use App\Service\Auth\Users;
 
 $sql = file_get_contents(__DIR__ . '/schema.sql');
 if ($sql === false) { fwrite(STDERR, "Cannot read schema.sql\n"); exit(1); }
@@ -31,5 +32,9 @@ foreach ($add as $table => $cols) {
         }
     }
 }
+
+// Carry the old single admin (app_settings) into the users table, once.
+$seeded = Users::seedFromLegacy();
+if ($seeded !== null) echo "  + users: migrated legacy admin {$seeded} (superadmin)\n";
 
 echo "Migrated: " . (cfg('db.path') ?: (STORAGE_ROOT . '/skyledger.sqlite')) . "\n";

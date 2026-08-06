@@ -9,6 +9,7 @@ use App\Repo\TripRepo;
 use App\Service\Leon\LeonParser;
 use App\Service\Leon\LeonProcessor;
 use App\Service\Auth\AccessLog;
+use App\Service\Auth\Users;
 
 $pass = 0; $fail = 0;
 function check(string $label, $got, $want) {
@@ -360,6 +361,61 @@ check('stats: distinct accounts', $as['accounts'], 2);
 check('stats: distinct IPs', $as['ips'], 2);
 check('stats: failed attempts', $as['failed'], 1);
 check('stats: 24h success count', $as['day'], 2);
+
+// --- 13. Accounts & roles: who may open the access log --------------
+Users::set('super@x.com', 'sUp3rPass!', Users::SUPERADMIN, 'Super');
+Users::set('demo@x.com',  'demoPass1',  Users::USER,       'Demo');
+check('two accounts created', Users::count(), 2);
+
+// Password verification, both directions.
+check('correct password → user row', Users::check('super@x.com', 'sUp3rPass!')['email'] ?? null, 'super@x.com');
+check('wrong password → null', Users::check('super@x.com', 'nope'), null);
+check('unknown email → null', Users::check('ghost@x.com', 'sUp3rPass!'), null);
+check('email match is case-insensitive', Users::check('SUPER@X.com', 'sUp3rPass!')['email'] ?? null, 'super@x.com');
+check('password is not stored in plaintext',
+    str_contains((string)Users::find('demo@x.com')['password_hash'], 'demoPass1'), false);
+
+// The whole point: only superadmin sees the access log.
+check('superadmin may view access log', Users::canViewAccessLog(Users::SUPERADMIN), true);
+check('user may NOT view access log', Users::canViewAccessLog(Users::USER), false);
+check('unknown role may NOT view access log', Users::canViewAccessLog('wizard'), false);
+check('no role at all may NOT view', Users::canViewAccessLog(null), false);
+check('unknown role normalises down to user', Users::normalizeRole('wizard'), Users::USER);
+
+// Quick login is a public bypass — it must never hand out a superadmin session.
+Settings::set('auth.quick_login_email', 'demo@x.com');
+check('quick login targets the demo account', Users::quickLoginUser()['email'], 'demo@x.com');
+check('  → and it is allowed', Users::canQuickLogin(Users::quickLoginUser()), true);
+Settings::set('auth.quick_login_email', 'super@x.com');
+check('quick login REFUSES a superadmin', Users::canQuickLogin(Users::quickLoginUser()), false);
+Settings::set('auth.quick_login_email', 'demo@x.com');
+
+// Role changes and the last-superadmin guard.
+check('setRole promotes', Users::setRole('demo@x.com', Users::SUPERADMIN), true);
+check('  → role persisted', Users::find('demo@x.com')['role'], Users::SUPERADMIN);
+check('  → quick login now refuses it', Users::canQuickLogin(Users::find('demo@x.com')), false);
+Users::setRole('demo@x.com', Users::USER);
+check('setRole on unknown account → false', Users::setRole('ghost@x.com', Users::SUPERADMIN), false);
+check('cannot delete the last superadmin', Users::delete('super@x.com'), false);
+check('  → it is still there', Users::find('super@x.com') !== null, true);
+check('can delete a non-superadmin', Users::delete('demo@x.com'), true);
+check('  → and it is gone', Users::find('demo@x.com'), null);
+
+// set() on an existing email updates rather than duplicating.
+Users::set('super@x.com', 'newPass99', Users::SUPERADMIN, 'Super');
+check('re-set does not duplicate the account', Users::count(), 1);
+check('  → new password works', Users::check('super@x.com', 'newPass99')['email'] ?? null, 'super@x.com');
+check('  → old password rejected', Users::check('super@x.com', 'sUp3rPass!'), null);
+
+// Legacy single-admin migration: settings pair → users row, once.
+Db::q("DELETE FROM users");
+Settings::set('auth.email', 'legacy@x.com');
+Settings::set('auth.password_hash', password_hash('legacyPass', PASSWORD_DEFAULT));
+check('legacy admin migrates in', Users::seedFromLegacy(), 'legacy@x.com');
+check('  → as superadmin (it was the only login)', Users::find('legacy@x.com')['role'], Users::SUPERADMIN);
+check('  → its password still works', Users::check('legacy@x.com', 'legacyPass')['email'] ?? null, 'legacy@x.com');
+check('re-running the migration is a no-op', Users::seedFromLegacy(), null);
+check('  → still exactly one account', Users::count(), 1);
 
 echo "\n" . str_repeat('=', 40) . "\n";
 printf("TOTAL: %d passed, %d failed\n", $pass, $fail);
