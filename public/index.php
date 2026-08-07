@@ -358,6 +358,7 @@ function render_login(): void {
           });
         </script>
       <?php endif; ?>
+      <a href="<?= e(base()) ?>/training.html" style="display:block;text-align:center;margin-top:18px;padding:11px;border:1px solid var(--line,#e2e8f0);border-radius:10px;color:#5b53f0;text-decoration:none;font-weight:600;font-size:13.5px">✨ First time here? Take the guided tour →</a>
     </div></body></html><?php
 }
 

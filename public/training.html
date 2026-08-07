@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Signum Unidash · Training Mode</title>
+<style>
+  :root{--blue:#2f6bff;--blue2:#1e50e0;--navy1:#0a1430;--navy2:#0e1d44;--ink:#0f172a;--mut:#6b7a90;--line:#e7ecf3;--bg:#eef2f8;--card:#fff;--pur1:#7c3aed;--pur2:#5b53f0;--green:#0a9d5a;--greenbg:#e9fbf1;--amber:#b45309;--amberbg:#fff7ed;--shadow:0 1px 2px rgba(16,24,40,.05),0 1px 3px rgba(16,24,40,.04)}
+  *{box-sizing:border-box}html,body{margin:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;color:var(--ink);background:var(--bg);-webkit-font-smoothing:antialiased}
+  .train{position:sticky;top:0;z-index:40;display:flex;align-items:center;justify-content:space-between;gap:16px;background:linear-gradient(100deg,var(--pur1),var(--pur2));color:#fff;padding:11px 20px;font-size:13.5px;font-weight:600;box-shadow:0 6px 20px rgba(91,83,240,.25)}
+  .train .l{display:flex;align-items:center;gap:10px}
+  .train .dot{width:9px;height:9px;border-radius:50%;background:#e9d5ff;animation:pulse 2s infinite}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(233,213,255,.6)}70%{box-shadow:0 0 0 8px rgba(233,213,255,0)}100%{box-shadow:0 0 0 0 rgba(233,213,255,0)}}
+  .train button{background:rgba(255,255,255,.16);color:#fff;border:1px solid rgba(255,255,255,.32);border-radius:9px;padding:7px 14px;font-size:12.5px;font-weight:600;cursor:pointer}
+  .train button:hover{background:rgba(255,255,255,.26)}
+  .train .texit{color:#fff;text-decoration:none;font-size:12.5px;font-weight:600;opacity:.92}.train .texit:hover{opacity:1;text-decoration:underline}
+  .train .r{display:flex;align-items:center;gap:14px}
+  .app{display:flex;min-height:calc(100vh - 42px)}
+  .side{width:224px;flex:0 0 224px;background:linear-gradient(185deg,var(--navy2),var(--navy1));color:#aab6d0;padding:18px 14px;position:relative}
+  .sbrand{display:flex;align-items:center;gap:11px;color:#fff;font-weight:800;font-size:16px;padding:6px 8px 20px}
+  .sbrand .lg{width:32px;height:32px;border-radius:9px;background:linear-gradient(160deg,#3b7bff,#1e50e0);display:flex;align-items:center;justify-content:center;box-shadow:0 4px 12px rgba(47,107,255,.4)}
+  .sbrand svg{width:19px;height:19px}
+  .scap{font-size:10.5px;letter-spacing:.12em;color:#5a6a8f;padding:10px 10px 6px;font-weight:700}
+  .nav a{display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:10px;color:#aab6d0;text-decoration:none;font-size:14px;font-weight:500;margin-bottom:3px;transition:.18s;cursor:pointer;position:relative}
+  .nav a svg{width:18px;height:18px;flex:0 0 18px;opacity:.85}
+  .nav a:hover{background:rgba(255,255,255,.05);color:#dbe4f5}
+  .nav a.on{background:linear-gradient(100deg,#2f6bff,#1e50e0);color:#fff;box-shadow:0 6px 16px rgba(30,80,224,.35)}
+  .nav a.flash{animation:navflash 1.15s infinite}
+  @keyframes navflash{0%,100%{outline:2px solid #c4b5fd;outline-offset:2px}50%{outline:2px solid rgba(196,181,253,.12);outline-offset:5px}}
+  .suser{position:absolute;left:14px;right:14px;bottom:16px;display:flex;align-items:center;gap:10px;padding:10px;border-radius:11px;background:rgba(255,255,255,.05)}
+  .suser .av{width:30px;height:30px;border-radius:50%;background:#2f6bff;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px}
+  .suser b{color:#fff;font-size:13px;display:block}.suser small{color:#7f8db0;font-size:11px}
+  .main{flex:1;padding:30px 34px;overflow:auto}
+  .fade{animation:fade .3s ease}@keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  h1{font-size:23px;margin:0 0 4px;letter-spacing:-.4px;font-weight:750}
+  .sub{color:var(--mut);font-size:14px;margin:0 0 22px}
+  .tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:15px;margin-bottom:22px}
+  .tile{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 17px;box-shadow:var(--shadow);position:relative;overflow:hidden}
+  .tile::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--blue)}
+  .tile.g::before{background:var(--green)}.tile.n::before{background:#94a3b8}
+  .tnum{font-size:27px;font-weight:800;letter-spacing:-.6px}.tlbl{font-size:12px;color:var(--mut);margin-top:3px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px;margin-bottom:16px;box-shadow:var(--shadow)}
+  .ctitle{font-weight:700;font-size:15px;margin:0 0 14px}
+  .drop{border:2px dashed #bcd0ff;border-radius:13px;background:linear-gradient(180deg,#f6f9ff,#eef4ff);padding:30px;text-align:center;color:#3b5bdb;font-size:14px}
+  .drop .ic{font-size:26px;display:block;margin-bottom:8px}
+  .empty{text-align:center;color:var(--mut);padding:28px 10px}
+  .empty .ic{font-size:30px;display:block;margin-bottom:10px;opacity:.6}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:12px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
+  th{font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.04em;font-weight:700;background:#fafbfe}
+  tbody tr:last-child td{border-bottom:0}tbody tr:hover{background:#f7faff}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .tag{background:#eaf1ff;color:var(--blue);border:1px solid #cfe0ff;border-radius:999px;padding:3px 10px;font-size:11.5px;font-weight:700}
+  .pillg{background:var(--greenbg);color:var(--green);border:1px solid #b6f0d0;border-radius:999px;padding:3px 10px;font-size:11.5px;font-weight:700}
+  .pilla{background:var(--amberbg);color:var(--amber);border:1px solid #fed7aa;border-radius:999px;padding:3px 10px;font-size:11.5px;font-weight:700}
+  .muted{color:#9aa7bd}
+  .btn{background:linear-gradient(100deg,#2f6bff,#1e50e0);color:#fff;border:none;border-radius:9px;padding:8px 15px;font-size:13px;font-weight:600;cursor:pointer;box-shadow:0 4px 12px rgba(30,80,224,.25);transition:.15s;text-decoration:none;display:inline-block}
+  .btn:hover{filter:brightness(1.06)}.btn.sm{padding:6px 12px;font-size:12px}
+  .btn.gray{background:#eef2f8;color:#334155;box-shadow:none}.btn.green{background:linear-gradient(100deg,#12b06a,#0a9d5a);box-shadow:0 4px 12px rgba(10,157,90,.25)}
+  .ring{animation:ring 1.4s infinite}
+  @keyframes ring{0%{box-shadow:0 0 0 0 rgba(124,58,237,.55)}70%{box-shadow:0 0 0 10px rgba(124,58,237,0)}100%{box-shadow:0 0 0 0 rgba(124,58,237,0)}}
+  .win{border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:0 16px 40px rgba(16,24,40,.14);margin:10px 0 6px;background:#fff}
+  .wbar{display:flex;align-items:center;gap:7px;padding:11px 14px;background:#f3f5fa;border-bottom:1px solid var(--line)}
+  .wbar i{width:11px;height:11px;border-radius:50%;display:inline-block}
+  .wbar i:nth-child(1){background:#ff5f57}.wbar i:nth-child(2){background:#febc2e}.wbar i:nth-child(3){background:#28c840}
+  .wurl{margin-left:12px;background:#fff;border:1px solid var(--line);border-radius:7px;padding:4px 12px;font-size:12px;color:#64748b;font-family:ui-monospace,monospace}
+  .wimg{width:100%;display:block}
+  .shotcap{color:var(--mut);font-size:12.5px;margin:0 0 18px}
+  .sechd{font-size:12px;font-weight:700;color:var(--mut);text-transform:uppercase;letter-spacing:.05em;margin:22px 0 4px}
+  .mail{display:inline-block;background:#0f172a;color:#fff;border-radius:8px;padding:4px 9px;font-family:ui-monospace,monospace;font-size:12.5px}
+  .dls{display:flex;flex-wrap:wrap;gap:9px}
+  .dls a{display:inline-flex;align-items:center;gap:8px;background:#f6f8fc;border:1px solid var(--line);border-radius:9px;padding:8px 12px;font-size:12.5px;font-weight:600;color:#0f172a;text-decoration:none;transition:.15s}
+  .dls a:hover{border-color:var(--blue);color:var(--blue);background:#f2f6ff}
+  .dls svg{width:14px;height:14px;opacity:.7}
+  .bub{position:fixed;right:28px;bottom:28px;width:340px;background:#fff;border-radius:20px;box-shadow:0 24px 60px rgba(16,24,40,.32);z-index:50;overflow:hidden;animation:pop .3s cubic-bezier(.2,.9,.3,1.2)}
+  @keyframes pop{from{opacity:0;transform:translateY(14px) scale(.97)}to{opacity:1;transform:none}}
+  .bcap{background:linear-gradient(100deg,var(--pur1),var(--pur2));color:#fff;padding:16px 20px 14px}
+  .bchip{display:inline-block;background:rgba(255,255,255,.2);border-radius:999px;padding:3px 10px;font-size:10.5px;letter-spacing:.09em;font-weight:800}
+  .bttl{font-size:17px;font-weight:800;margin-top:8px;letter-spacing:-.2px}
+  .bbody{padding:15px 20px 8px;font-size:13.5px;color:#3a4a63;line-height:1.55}
+  .bbody b{color:var(--ink)}
+  .bfoot{display:flex;align-items:center;justify-content:space-between;padding:10px 20px 16px}
+  .lnk{background:none;border:none;color:var(--mut);font-size:13px;cursor:pointer;font-weight:600;padding:0}.lnk:hover{color:#334155}
+  .prog{display:flex;gap:6px}.prog i{width:7px;height:7px;border-radius:50%;background:#e4e0f7}.prog i.on{background:var(--pur2);width:20px;border-radius:999px;transition:.2s}
+  @media(max-width:760px){.tiles{grid-template-columns:repeat(2,1fr)}.side{display:none}.bub{right:12px;left:12px;width:auto}}
+</style></head>
+<body>
+<div class="train">
+  <div class="l"><span class="dot"></span> Training Mode — a private practice workspace with sample data. Nothing here touches your live Xero.</div>
+  <div class="r"><button onclick="resetTour()">Restart</button><a class="texit" href="login">Exit to sign in &rarr;</a></div>
+</div>
+<div class="app">
+  <aside class="side">
+    <div class="sbrand"><span class="lg"><svg viewBox="0 0 28 28"><path d="M6 19.5 L22 8 L15.5 22 L13.5 15.5 Z" fill="#fff"/></svg></span>Signum Unidash</div>
+    <div class="scap">WORKSPACE</div>
+    <nav class="nav" id="nav">
+      <a data-tab="dashboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="8" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="15" width="7" height="6" rx="1.5"/></svg> Dashboard</a>
+      <a data-tab="trips"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15.5 12 20l-9-4.5"/><path d="M21 9.5 12 4 3 9.5l9 4.5 9-4.5z"/></svg> Trips</a>
+      <a data-tab="bills"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 2h9l3 3v17l-3-2-3 2-3-2-3 2V2z"/><path d="M9 7h6M9 11h6M9 15h4"/></svg> Bills</a>
+      <a data-tab="invoices"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h6"/></svg> Invoices</a>
+    </nav>
+    <div class="suser"><span class="av">S</span><span><b>Signum Aviation</b><small>practice workspace</small></span></div>
+  </aside>
+  <main class="main" id="main"></main>
+</div>
+<div class="bub" id="bub">
+  <div class="bcap"><span class="bchip" id="bstep"></span><div class="bttl" id="bttl"></div></div>
+  <div class="bbody" id="bbody"></div>
+  <div class="bfoot"><div class="prog" id="prog"></div><button class="lnk" onclick="resetTour()">Restart</button></div>
+</div>
+<script>
+const BILL_EUR="assets/training/bill-eur.png",BILL_USD="assets/training/bill-usd.png",INVOICE="assets/training/invoice.png";
+const DL='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>';
+function win(url,img,cap){return `<div class="win"><div class="wbar"><i></i><i></i><i></i><div class="wurl">${url}</div></div><img class="wimg" src="${img}"></div><p class="shotcap">${cap}</p>`}
+let tab='trips';
+const S={imported:false,arrived:false,tagSN:false,tagHKG:false,approved:false};
+const XU='xero.com &middot; Signum Aviation DEMO';
+
+function stepInfo(){
+  if(!S.imported) return {n:1,ttl:'Import your flight schedule',target:'btnImport',
+    body:'On <b>Trips</b>, download the flight schedule if you need it, then click <b>Import</b> to load your trips into the master list.'};
+  if(!S.arrived) return {n:2,ttl:'Email the invoices, then refresh',target:'btnArrive',
+    body:'Download the two invoices, email them as attachments to <span class="mail">signum.fusioneta@gmail.com</span>, then click <b>Refresh from Xero</b> to pull the new bills in.'};
+  if(!(S.tagSN&&S.tagHKG)) return {n:3,ttl:'Tag the bills to their trip',target:(!S.tagSN?'btnTagSN':'btnTagHKG'),
+    body:'On the <b>Bills</b> tab, click <b>Tag</b> on each bill to write its trip number onto it.'};
+  if(!S.approved) return {n:4,ttl:'Approve the ready trip',target:'btnApprove',
+    body:'Trip <b>99751</b> now has every leg costed. Click <b>Approve</b> to raise the client invoice.'};
+  return {n:5,ttl:'Done — invoice raised! 🎉',target:null,
+    body:'Your client invoice is raised in Xero. That’s the whole loop: invoice in by email → bill → tag → approve → client invoice out.'};
+}
+
+function views(){
+  const billsCount=S.arrived?2:0;
+  return {
+  dashboard:`<h1>Dashboard</h1><p class="sub">Your trips, bills and billing status in one place.</p>
+    <div class="tiles">
+      <div class="tile"><div class="tnum">${S.imported?3:0}</div><div class="tlbl">Trips in master list</div></div>
+      <div class="tile"><div class="tnum" style="color:#2f6bff">${billsCount}</div><div class="tlbl">Matched to bills</div></div>
+      <div class="tile g"><div class="tnum" style="color:#0a9d5a">${(S.tagSN&&S.tagHKG)?1:0}</div><div class="tlbl">Ready to invoice</div></div>
+      <div class="tile n"><div class="tnum">${S.approved?1:0}</div><div class="tlbl">Invoiced</div></div>
+    </div>
+    <div class="card"><div class="ctitle">Practice workspace</div><span style="color:#6b7a90;font-size:14px">Follow the guide, bottom-right. Everything here is sample data — your live Xero is untouched.</span></div>`,
+
+  trips: !S.imported
+    ? `<h1>Trips</h1><p class="sub">Import your flight schedule to begin.</p>
+       <div class="card"><div class="ctitle">Import flight schedule</div>
+         <div class="drop"><span class="ic">&#8681;</span><b>Flight Count Inc.xlsx</b> — sample flight schedule</div>
+         <div class="dls" style="margin-top:14px"><a href="assets/training/Flight-Count-Inc.xlsx" download="Flight Count Inc.xlsx">${DL}Flight Count Inc.xlsx</a></div>
+         <div style="margin-top:14px"><button class="btn" id="btnImport" onclick="doImport()">Import</button></div></div>`
+    : `<h1>Trips</h1><p class="sub">3 trips imported into the master list.</p>
+       <div class="card" style="padding:6px 8px"><table><thead><tr><th>Trip</th><th>Client</th><th>Aircraft</th><th>Route</th><th>Costing</th><th>Approve</th></tr></thead><tbody>
+         <tr><td class="mono">99751</td><td>Signum Malaysia S/B</td><td class="mono">MAL191</td><td class="mono">VHHH</td>
+           <td>${S.arrived?'<span class="pillg">Ready 1/1</span>':'<span class="muted">None 0/1</span>'}</td>
+           <td>${S.approved?'<span class="pillg">Invoiced</span>':((S.tagSN&&S.tagHKG)?'<button class="btn green sm" id="btnApprove" onclick="doApprove()">Approve</button>':(S.arrived?'<span class="muted">tag first</span>':''))}</td></tr>
+         <tr><td class="mono">35184</td><td>Smyrna Ready Mix Concrete</td><td class="mono">N488MH</td><td class="mono">KMQY &ndash; EINN &ndash; KBGR</td>
+           <td>${S.arrived?'<span class="pilla">Partial 1/3</span>':'<span class="muted">None 0/3</span>'}</td><td></td></tr>
+         <tr><td class="mono">35507</td><td>Polaris Aviation</td><td class="mono">N700LE</td><td class="mono">KSWF &ndash; KHPN &ndash; EGGW</td><td><span class="muted">None 0/3</span></td><td></td></tr>
+       </tbody></table></div>`,
+
+  bills: !S.arrived
+    ? `<h1>Bills</h1><p class="sub">Supplier bills, matched to a trip in your master list.</p>
+       <div class="card"><div class="empty"><span class="ic">&#128231;</span>No bills yet.
+         <div style="font-size:13px;margin-top:8px">Download the two invoices, email them as attachments to <span class="mail">signum.fusioneta@gmail.com</span>, then refresh.</div>
+         <div class="dls" style="justify-content:center;margin-top:14px"><a href="assets/training/SN030473.png" download="SN030473.png">${DL}SN030473.png</a><a href="assets/training/HKG-GH-037-26.pdf" download="HKG-GH-037-26.pdf">${DL}HKG-GH-037-26.pdf</a></div>
+         <div style="margin-top:18px"><button class="btn" id="btnArrive" onclick="doArrive()">&#128260;&nbsp; Refresh from Xero</button></div></div></div>`
+    : `<h1>Bills</h1><p class="sub">2 supplier bills, matched to their trips.</p>
+       <div class="card" style="padding:6px 8px"><table><thead><tr><th>Supplier</th><th>Bill</th><th>Amount</th><th>Matched trip</th><th></th></tr></thead><tbody>
+         <tr><td>Signature Flight Support Ireland Ltd</td><td class="mono">SN030473</td><td>EUR 1,012.72</td><td>35184 &rarr; Smyrna Ready Mix</td>
+           <td>${S.tagSN?'<span class="pillg">Tagged ✓</span>':'<button class="btn sm" id="btnTagSN" onclick="doTag(\'SN\')">Tag 35184</button>'}</td></tr>
+         <tr><td>ASA South China Ltd.</td><td class="mono">HKG-GH-037-26</td><td>USD 27,506.98</td><td>99751 &rarr; Signum Malaysia S/B</td>
+           <td>${S.tagHKG?'<span class="pillg">Tagged ✓</span>':'<button class="btn sm" id="btnTagHKG" onclick="doTag(\'HKG\')">Tag 99751</button>'}</td></tr>
+       </tbody></table></div>
+       <div class="sechd">Created in Xero</div>
+       ${win(XU,BILL_EUR,'SN030473 — Signature Aviation, EUR 1,012.72'+(S.tagSN?' · Trip No: 35184':''))}
+       ${win(XU,BILL_USD,'HKG-GH-037-26 — ASA South China, USD 27,506.98'+(S.tagHKG?' · Trip No: 99751':''))}`,
+
+  invoices: !S.approved
+    ? `<h1>Invoices</h1><p class="sub">Client invoices raised from a trip’s bills.</p>
+       <div class="card"><div class="empty"><span class="ic">&#129534;</span>No invoices yet.<br><span style="font-size:12.5px">Approve a fully-costed trip and its client invoice appears here.</span></div></div>`
+    : `<h1>Invoices</h1><p class="sub">Client invoice raised for trip 99751.</p>
+       <div class="sechd">Raised in Xero</div>
+       ${win(XU,INVOICE,'INV-0001 to Signum Malaysia S/B — ground-handling recharge + 11% admin, MYR 124,055.07')}`
+  };
+}
+
+const TABFOR={btnImport:'trips',btnArrive:'bills',btnTagSN:'bills',btnTagHKG:'bills',btnApprove:'trips'};
+function setTab(t){tab=t;render();}
+function advance(){const st=stepInfo();tab=(st.target&&TABFOR[st.target])?TABFOR[st.target]:(S.approved?'invoices':tab);render();}
+function doImport(){S.imported=true;advance();}
+function doArrive(){S.arrived=true;advance();}
+function doTag(w){if(w==='SN')S.tagSN=true;else S.tagHKG=true;advance();}
+function doApprove(){S.approved=true;advance();}
+
+function render(){
+  const m=document.getElementById('main');
+  m.innerHTML=views()[tab];
+  m.classList.remove('fade');void m.offsetWidth;m.classList.add('fade');
+  document.querySelectorAll('#nav a').forEach(a=>{a.classList.toggle('on',a.dataset.tab===tab);a.classList.remove('flash');});
+  const st=stepInfo();
+  const stepTab = st.target ? TABFOR[st.target] : (S.approved?'invoices':null);
+  if(stepTab){const nav=document.querySelector('#nav a[data-tab="'+stepTab+'"]');if(nav)nav.classList.add('flash');}
+  if(st.target && stepTab===tab){const el=document.getElementById(st.target);if(el)el.classList.add('ring');}
+  document.getElementById('bstep').textContent='STEP '+st.n+' OF 5';
+  document.getElementById('bttl').innerHTML=st.ttl;
+  document.getElementById('bbody').innerHTML=st.body;
+  document.getElementById('prog').innerHTML=[1,2,3,4,5].map(k=>`<i class="${k<=st.n?'on':''}"></i>`).join('');
+}
+document.getElementById('nav').addEventListener('click',e=>{const a=e.target.closest('a[data-tab]');if(a)setTab(a.dataset.tab);});
+function resetTour(){Object.keys(S).forEach(k=>S[k]=false);tab='trips';render();}
+render();
+</script>
+</body></html>
