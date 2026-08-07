@@ -781,7 +781,7 @@ function render_bills(bool $connected, string $tenant, string $tenantId): void {
         return '<span class="pill '.$cl.'">'.e($t).'</span>';
     };
     ?>
-    <p class="lede">Supplier bills WazzOCR created in Xero, matched to a trip in your master list. Tag writes the <b>trip number</b> onto the bill's Reference. Approving a trip's bills (on the <a class="link" href="<?= e(base()) ?>/?view=trips">Trips</a> tab) authorises them in Xero, and once all of a trip's bills are approved and every leg is costed, the client invoice is raised automatically.</p>
+    <p class="lede">Supplier bills WazzOCR created in Xero, matched to a trip in your master list. Tag writes the <b>trip number</b> into the bill's description (the "Trip No:" line). Approving a trip's bills (on the <a class="link" href="<?= e(base()) ?>/?view=trips">Trips</a> tab) authorises them in Xero, and once all of a trip's bills are approved and every leg is costed, the client invoice is raised automatically.</p>
 
     <div class="banner <?= $connected ? 'on' : 'off' ?>">
       <div class="binfo"><span class="dot"></span>

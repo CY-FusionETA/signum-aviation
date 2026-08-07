@@ -169,22 +169,37 @@ final class XeroApiClient implements XeroClientInterface
     }
 
     /**
-     * Tag a draft bill with the matched trip number (written to its Reference),
-     * linking the supplier cost to the trip for later client recharge.
+     * Tag a draft bill with the matched trip number by writing it into the
+     * "Trip No:" line of the bill's line-item description (the Reference is left
+     * as the supplier invoice number). Links the supplier cost to the trip for
+     * later client recharge.
      * @return array{ok:bool, stubbed:bool, error?:string}
      */
-    public function tagBill(string $invoiceId, string $reference): array
+    public function tagBill(string $invoiceId, string $tripNumber): array
     {
         try {
             $auth = XeroOAuth::accessToken();
             if (!$auth) return ['ok' => false, 'stubbed' => false, 'error' => 'Xero is not connected.'];
+
+            // Read the bill's current lines, then write the trip number into the
+            // "Trip No:" line of each description. Reference is not touched.
+            [$gc, $gb] = XeroOAuth::http('GET', self::API . 'Invoices/' . rawurlencode($invoiceId), [
+                'Authorization: Bearer ' . $auth['access_token'],
+                'Xero-tenant-id: ' . $auth['tenant_id'],
+                'Accept: application/json',
+            ]);
+            if ($gc < 200 || $gc >= 300) return ['ok' => false, 'stubbed' => false, 'error' => 'Could not read the bill from Xero.'];
+            $lines = json_decode($gb, true)['Invoices'][0]['LineItems'] ?? [];
+            if (!$lines) return ['ok' => false, 'stubbed' => false, 'error' => 'Bill has no line items to tag.'];
+
+            $out = self::embedTripInLines($lines, $tripNumber);
 
             [$code, $body] = XeroOAuth::http('POST', self::API . 'Invoices', [
                 'Authorization: Bearer ' . $auth['access_token'],
                 'Xero-tenant-id: ' . $auth['tenant_id'],
                 'Accept: application/json',
                 'Content-Type: application/json',
-            ], json_encode(['Invoices' => [['InvoiceID' => $invoiceId, 'Reference' => $reference]]], JSON_UNESCAPED_UNICODE));
+            ], json_encode(['Invoices' => [['InvoiceID' => $invoiceId, 'LineItems' => $out]]], JSON_UNESCAPED_UNICODE));
 
             $json = json_decode($body, true);
             $ok = $code >= 200 && $code < 300 && !empty($json['Invoices'][0]['InvoiceID']);
@@ -193,6 +208,41 @@ final class XeroApiClient implements XeroClientInterface
         } catch (\Throwable $e) {
             return ['ok' => false, 'stubbed' => false, 'error' => $e->getMessage()];
         }
+    }
+
+    /**
+     * Write the trip number into the "Trip No:" line of each line-item
+     * description, preserving LineItemID + amounts so Xero updates in place. If a
+     * line has a "Trip No:" placeholder its value is replaced; if no line has one,
+     * the trip number is appended to the first line. Only Description changes.
+     * Pure + testable.
+     * @param array $lines raw Xero LineItems
+     * @return array lines ready to POST back
+     */
+    public static function embedTripInLines(array $lines, string $tripNumber): array
+    {
+        $anyHadTripLine = false;
+        $out = [];
+        foreach ($lines as $l) {
+            $desc = (string)($l['Description'] ?? '');
+            if (stripos($desc, 'Trip No:') !== false) {
+                $desc = preg_replace_callback('/Trip No:[^\r\n]*/i', fn() => 'Trip No: ' . $tripNumber, $desc);
+                $anyHadTripLine = true;
+            }
+            $out[] = array_filter([
+                'LineItemID'  => $l['LineItemID'] ?? null,
+                'Description' => $desc,
+                'Quantity'    => $l['Quantity'] ?? null,
+                'UnitAmount'  => $l['UnitAmount'] ?? null,
+                'AccountCode' => $l['AccountCode'] ?? null,
+                'ItemCode'    => $l['ItemCode'] ?? null,
+                'TaxType'     => $l['TaxType'] ?? null,
+            ], fn($v) => $v !== null);
+        }
+        if (!$anyHadTripLine && $out) {
+            $out[0]['Description'] = rtrim((string)($out[0]['Description'] ?? '')) . "\nTrip No: " . $tripNumber;
+        }
+        return $out;
     }
 
     /**

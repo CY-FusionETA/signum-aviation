@@ -416,6 +416,31 @@ check('  → as superadmin (it was the only login)', Users::find('legacy@x.com')
 check('  → its password still works', Users::check('legacy@x.com', 'legacyPass')['email'] ?? null, 'legacy@x.com');
 check('re-running the migration is a no-op', Users::seedFromLegacy(), null);
 check('  → still exactly one account', Users::count(), 1);
+// --- 14. tagBill: trip number written into the description "Trip No:" line ---
+$XC = '\App\Service\Xero\XeroApiClient';
+$lines = [[
+  'LineItemID' => 'li-1',
+  'Description' => "Landing, Handling & Associated Charges at EINN on 07/07/2026 for N488MH\nTrip No:",
+  'Quantity' => 1, 'UnitAmount' => 1012.72, 'AccountCode' => '325', 'TaxType' => 'INPUT',
+]];
+$tagged = $XC::embedTripInLines($lines, '35184');
+check('tag fills the blank Trip No: line', $tagged[0]['Description'],
+    "Landing, Handling & Associated Charges at EINN on 07/07/2026 for N488MH\nTrip No: 35184");
+check('  → LineItemID preserved', $tagged[0]['LineItemID'], 'li-1');
+check('  → amount preserved', $tagged[0]['UnitAmount'], 1012.72);
+check('  → Reference not in the payload (untouched)', array_key_exists('Reference', $tagged[0]), false);
+
+$lines2 = [['Description' => "Charges at EINN for N488MH\nTrip No: 00000", 'UnitAmount' => 5.0]];
+check('tag replaces an existing Trip No', $XC::embedTripInLines($lines2, '35184')[0]['Description'],
+    "Charges at EINN for N488MH\nTrip No: 35184");
+
+$lines3 = [['Description' => 'Charges at EINN for N488MH', 'UnitAmount' => 5.0]];
+check('tag appends Trip No when the line has none', $XC::embedTripInLines($lines3, '35184')[0]['Description'],
+    "Charges at EINN for N488MH\nTrip No: 35184");
+
+$lines4 = [['Description' => "X\nTrip No:"]];
+check('tag keeps alnum/slash trip numbers literal', $XC::embedTripInLines($lines4, '35503/EGJJ')[0]['Description'],
+    "X\nTrip No: 35503/EGJJ");
 
 echo "\n" . str_repeat('=', 40) . "\n";
 printf("TOTAL: %d passed, %d failed\n", $pass, $fail);

@@ -13,10 +13,11 @@ interface XeroClientInterface
     public function listActiveBills(): array;
 
     /**
-     * Tag a draft bill with the matched trip number (into its Reference).
+     * Tag a draft bill with the matched trip number by writing it into the
+     * "Trip No:" line of the bill's line-item description (Reference untouched).
      * @return array{ok:bool, stubbed:bool, error?:string}
      */
-    public function tagBill(string $invoiceId, string $reference): array;
+    public function tagBill(string $invoiceId, string $tripNumber): array;
 
     /**
      * Approve a supplier bill (DRAFT → AUTHORISED).
