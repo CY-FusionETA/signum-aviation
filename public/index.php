@@ -108,7 +108,7 @@ if ($path === '/login') { render_login(); exit; }
 // --- public file-drop (Gmail intake → Wazzup) -----------------------
 // The Gmail script POSTs an attachment here (guarded by a shared key) and gets a
 // short-lived public URL back; Wazzup then fetches that URL to send the file to
-// WazzOCR over WhatsApp. No session — these run before the auth gate.
+// the OCR service over WhatsApp. No session — these run before the auth gate.
 if ($path === '/drop' && $method === 'POST') {
     $key = (string)(Settings::get('drop.key', '') ?: cfg('drop.key', ''));
     if ($key === '' || !hash_equals($key, (string)($_POST['key'] ?? ''))) { http_response_code(403); exit('Forbidden'); }
@@ -573,7 +573,7 @@ function render_dashboard(array $stat, array $rows, bool $connected, string $ten
         <section class="card">
           <div class="chead"><h2>Data sources</h2></div>
           <div class="src"><span class="sdot on"></span><b>LEON</b><span class="muted">Flight Count → trip master list</span></div>
-          <div class="src"><span class="sdot on"></span><b>Gmail</b><span class="muted">supplier invoices → WazzOCR</span></div>
+          <div class="src"><span class="sdot on"></span><b>Gmail</b><span class="muted">supplier invoices → Xero</span></div>
           <div class="src"><span class="sdot <?= $connected?'on':'off' ?>"></span><b>Xero</b><span class="muted"><?= $connected ? e($tenant) : 'not connected' ?></span></div>
         </section>
       </div>
@@ -782,11 +782,11 @@ function render_bills(bool $connected, string $tenant, string $tenantId): void {
         return '<span class="pill '.$cl.'">'.e($t).'</span>';
     };
     ?>
-    <p class="lede">Supplier bills WazzOCR created in Xero, matched to a trip in your master list. Tag writes the <b>trip number</b> into the bill's description (the "Trip No:" line). Approving a trip's bills (on the <a class="link" href="<?= e(base()) ?>/?view=trips">Trips</a> tab) authorises them in Xero, and once all of a trip's bills are approved and every leg is costed, the client invoice is raised automatically.</p>
+    <p class="lede">Supplier bills created in Xero, matched to a trip in your master list. Tag writes the <b>trip number</b> into the bill's description (the "Trip No:" line). Approving a trip's bills (on the <a class="link" href="<?= e(base()) ?>/?view=trips">Trips</a> tab) authorises them in Xero, and once all of a trip's bills are approved and every leg is costed, the client invoice is raised automatically.</p>
 
     <div class="banner <?= $connected ? 'on' : 'off' ?>">
       <div class="binfo"><span class="dot"></span>
-        <div><?= $connected ? '<b>Reading '.e($tenant).'</b> <span class="muted">· must be the same org WazzOCR bills into</span>' : '<b>Not connected to Xero</b> <span class="muted">· connect an org to pull bills</span>' ?></div>
+        <div><?= $connected ? '<b>Reading '.e($tenant).'</b> <span class="muted">· must be the same org your bills are created in</span>' : '<b>Not connected to Xero</b> <span class="muted">· connect an org to pull bills</span>' ?></div>
       </div>
       <div class="bactions">
         <form method="post" action="<?= e(base()) ?>/bills/refresh"><input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>"><button class="btn primary sm" <?= $connected?'':'disabled' ?>>Refresh from Xero</button></form>

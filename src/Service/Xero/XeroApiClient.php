@@ -65,7 +65,7 @@ final class XeroApiClient implements XeroClientInterface
 
     /**
      * List ACTIVE supplier bills (ACCPAY) from the connected org — draft ones
-     * WazzOCR just created plus ones already approved (authorised). Excludes
+     * just created plus ones already approved (authorised). Excludes
      * VOIDED/DELETED, so bills that vanish from this list have been retired in
      * Xero. Each bill carries its Xero 'status'. @return array{ok:bool, bills:array, error?:string}
      */

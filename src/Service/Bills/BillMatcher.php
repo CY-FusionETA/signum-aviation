@@ -6,7 +6,7 @@ namespace App\Service\Bills;
 /**
  * Module 3 core: match a supplier bill to a trip in the LEON master list.
  *
- * Best case the description follows WazzOCR's standard convention
+ * Best case the description follows the standard OCR convention
  * "<Charge> at <ICAO> on <DD/MM/YYYY> for <Tail>". But descriptions vary, so we
  * ALSO scan the whole bill text for any trip's aircraft tail and any airport on
  * its route — matching works as long as the tail (and ideally the airport/date)

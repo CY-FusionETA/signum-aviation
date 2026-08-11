@@ -20,7 +20,7 @@ use App\Service\Xero\XeroOAuth;
  *              approved and all legs are costed, raise the client invoice.
  *
  * Reads/writes whatever org Signum Unidash is connected to — which must be the
- * same org WazzOCR creates the bills in.
+ * same org the bills are created in.
  */
 final class BillReconciler
 {

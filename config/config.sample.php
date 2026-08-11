@@ -52,7 +52,7 @@ return [
 
     // File-drop endpoint: the Gmail intake script POSTs each attachment to
     // <base_url>/drop and gets back a short-lived public URL, which it hands to
-    // Wazzup to send to WazzOCR over WhatsApp. Set a long random shared key here
+    // Wazzup to send to the OCR service over WhatsApp. Set a long random shared key here
     // and the SAME value as DROP_KEY in the Apps Script. Empty = endpoint disabled.
     'drop' => [
         'key' => '',   // e.g. bin2hex(random_bytes(24))
