@@ -130,6 +130,16 @@ final class BillRepo
         Db::q("UPDATE xero_bills SET xero_last_error=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", [$error, $id]);
     }
 
+    /**
+     * Record when the bill was created in Xero (UTC). Written once, on the first
+     * refresh that can read it — upsert() never touches the column, so tagging or
+     * approving the bill later cannot move the timestamp.
+     */
+    public static function setXeroCreatedAt(int $id, string $utc): void
+    {
+        Db::q("UPDATE xero_bills SET xero_created_at=? WHERE id=?", [$utc, $id]);
+    }
+
     public static function allForTenant(string $tenantId): array
     {
         return Db::all("SELECT * FROM xero_bills WHERE tenant_id = ? ORDER BY bill_date DESC, id DESC", [$tenantId]);

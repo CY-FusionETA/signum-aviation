@@ -15,9 +15,10 @@ Db::conn()->exec($sql);
 // Safe to re-run: only columns that are missing get added.
 $add = [
     'xero_bills' => [
-        'currency_rate' => 'REAL',
-        'base_currency' => 'TEXT',
-        'base_total'    => 'REAL',
+        'currency_rate'   => 'REAL',
+        'base_currency'   => 'TEXT',
+        'base_total'      => 'REAL',
+        'xero_created_at' => 'TEXT',
     ],
     'leon_trips' => [
         'waived_legs' => 'TEXT',

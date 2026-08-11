@@ -47,6 +47,37 @@ function admin_configured(): bool { return Users::count() > 0 || (admin_email() 
 /** One-click sign-in on the login page. Bypasses the password — see /login/quick. */
 function quick_login_enabled(): bool { return (string)Settings::get('auth.quick_login', '0') === '1'; }
 
+/**
+ * Deep link to a bill in Xero. Routing through organisationlogin with the org's
+ * short code opens it in the org the bill actually lives in, rather than whichever
+ * one that browser last had open. Without a short code (never refreshed since the
+ * upgrade) fall back to the plain link — Xero still resolves it, just in the
+ * current org. Returns '' when there is nothing to link to.
+ */
+function xero_bill_url(string $invoiceId): string
+{
+    if ($invoiceId === '') return '';
+    $view  = '/AccountsPayable/View.aspx?InvoiceID=' . rawurlencode($invoiceId);
+    $short = trim((string)Settings::get('xero.short_code', ''));
+    return $short === ''
+        ? 'https://go.xero.com' . $view
+        : 'https://go.xero.com/organisationlogin/default.aspx?shortcode=' . rawurlencode($short)
+          . '&redirecturl=' . rawurlencode($view);
+}
+
+/** A stored UTC timestamp shown in the app's own timezone; '' stays em-dash-able. */
+function local_dt(?string $utc, string $fmt = 'd M Y H:i'): string
+{
+    $utc = trim((string)$utc);
+    if ($utc === '') return '';
+    try {
+        return (new DateTimeImmutable($utc, new DateTimeZone('UTC')))
+            ->setTimezone(new DateTimeZone(date_default_timezone_get()))->format($fmt);
+    } catch (\Throwable $e) {
+        return '';
+    }
+}
+
 /** Who is signed in right now, and what they may see. */
 function current_email(): string { return (string)($_SESSION['email'] ?? ''); }
 function current_role(): string  { return (string)($_SESSION['role'] ?? Users::USER); }
@@ -816,15 +847,27 @@ function render_bills(bool $connected, string $tenant, string $tenantId): void {
         <?php endif; ?>
         <div class="tablewrap">
         <table class="grid"><thead><tr>
-          <th>Supplier</th><th>Bill</th><th>Date</th><th class="num">Amount</th>
+          <th>Created in Xero</th><th>Supplier</th><th>Bill</th><th>Invoice date</th><th class="num">Amount</th>
           <th>Extracted</th><th>Matched trip → client</th><th>Status</th><th></th>
         </tr></thead><tbody>
         <?php foreach ($bills as $b):
-            $ex = trim(implode(' · ', array_filter([$b['ex_tail'], $b['ex_airport'], $b['ex_date']])));
+            $ex      = trim(implode(' · ', array_filter([$b['ex_tail'], $b['ex_airport'], $b['ex_date']])));
+            $xeroUrl = xero_bill_url((string)$b['xero_invoice_id']);
+            $created = local_dt($b['xero_created_at'] ?? '');
         ?>
           <tr>
+            <td class="nowrap"><?php if ($created !== ''): ?>
+                <?= e(local_dt($b['xero_created_at'], 'd M Y')) ?>
+                <div class="muted small"><?= e(local_dt($b['xero_created_at'], 'H:i')) ?></div>
+              <?php else: ?><span class="muted" title="Filled in on the next refresh from Xero">—</span><?php endif; ?></td>
             <td><?= e($b['supplier'] ?: '—') ?><?php if ($b['description']): ?><div class="billdesc" title="<?= e($b['description']) ?>"><?= e(mb_strimwidth((string)$b['description'], 0, 64, '…')) ?></div><?php endif; ?></td>
-            <td class="mono" title="<?= e($b['description']) ?>"><?= e($b['invoice_number'] ?: substr((string)$b['xero_invoice_id'],0,8)) ?></td>
+            <td class="mono" title="<?= e($b['description']) ?>">
+              <?php $label = $b['invoice_number'] ?: substr((string)$b['xero_invoice_id'], 0, 8);
+              if ($xeroUrl !== ''): ?>
+                <a class="link" href="<?= e($xeroUrl) ?>" target="_blank" rel="noopener noreferrer"
+                   title="Open this bill in Xero"><?= e($label) ?> <span class="extlink">↗</span></a>
+              <?php else: ?><?= e($label) ?><?php endif; ?>
+            </td>
             <td class="nowrap"><?= e($b['bill_date']) ?></td>
             <td class="num"><?php if ($b['total']!==null):
                 echo e($b['currency'].' '.number_format((float)$b['total'],2));
@@ -1074,6 +1117,7 @@ function styles(): void { ?><style>
 body{margin:0;font:14.5px/1.55 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--ink)}
 .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 a.link{text-decoration:none;color:var(--accent)} a.link:hover{text-decoration:underline}
+.extlink{font-size:11px;opacity:.55}
 .muted{color:var(--mut)} .green{color:var(--green)} .amber{color:var(--amber)} .red{color:var(--red)}
 
 /* app shell */

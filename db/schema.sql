@@ -62,7 +62,8 @@ CREATE TABLE IF NOT EXISTS xero_bills (
   xero_invoice_id     TEXT NOT NULL,
   invoice_number      TEXT,
   supplier            TEXT,
-  bill_date           TEXT,               -- ISO yyyy-mm-dd
+  bill_date           TEXT,               -- the bill's invoice date, ISO yyyy-mm-dd
+  xero_created_at     TEXT,               -- when the bill was created in Xero, UTC "yyyy-mm-dd hh:mm:ss"
   reference           TEXT,
   total               REAL,               -- amount in the bill's own currency
   currency            TEXT,               -- the bill's currency code

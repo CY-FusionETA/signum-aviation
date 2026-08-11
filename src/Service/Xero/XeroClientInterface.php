@@ -29,6 +29,13 @@ interface XeroClientInterface
     public function invoiceStatus(string $invoiceId): string;
 
     /**
+     * When the bill was created in Xero, as UTC "yyyy-mm-dd hh:mm:ss"; '' if unknown.
+     * The Invoices payload carries no created date (only UpdatedDateUTC, which moves
+     * every time we tag or approve), so this reads the invoice's History instead.
+     */
+    public function billCreatedAt(string $invoiceId): string;
+
+    /**
      * Create a DRAFT client sales invoice (ACCREC) — Module 5.
      * @return array{ok:bool, invoice_id:?string, invoice_number:?string, stubbed:bool, error?:string}
      */

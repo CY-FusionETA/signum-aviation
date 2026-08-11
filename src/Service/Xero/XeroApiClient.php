@@ -153,7 +153,44 @@ final class XeroApiClient implements XeroClientInterface
             'Accept: application/json',
         ]);
         if ($code < 200 || $code >= 300) return '';
-        return strtoupper((string)(json_decode($body, true)['Organisations'][0]['BaseCurrency'] ?? ''));
+        $org = json_decode($body, true)['Organisations'][0] ?? [];
+        // Stash the short code while we're here: "View in Xero" links need it to
+        // land in the right org rather than whichever one the browser last used.
+        $short = (string)($org['ShortCode'] ?? '');
+        if ($short !== '' && $short !== (string)\App\Settings::raw('xero.short_code', '')) {
+            \App\Settings::set('xero.short_code', $short);
+        }
+        return strtoupper((string)($org['BaseCurrency'] ?? ''));
+    }
+
+    /**
+     * True creation timestamp from the invoice's History ("Created" record). The
+     * Invoices endpoint has no created date, and UpdatedDateUTC shifts whenever we
+     * tag or approve — so a bill would otherwise appear to be "created" when we
+     * last touched it. Returns '' on any error; a missing timestamp never blocks a pull.
+     */
+    public function billCreatedAt(string $invoiceId): string
+    {
+        $auth = XeroOAuth::token();
+        if (!$auth || $invoiceId === '') return '';
+        [$code, $body] = XeroOAuth::http('GET', self::API . 'Invoices/' . rawurlencode($invoiceId) . '/History', [
+            'Authorization: Bearer ' . $auth['access_token'],
+            'Xero-tenant-id: ' . $auth['tenant_id'],
+            'Accept: application/json',
+        ]);
+        if ($code < 200 || $code >= 300) return '';
+        $records = json_decode($body, true)['HistoryRecords'] ?? [];
+        if (!is_array($records)) return '';
+        $earliest = '';
+        foreach ($records as $r) {
+            $when = self::xeroDateTime((string)($r['DateUTCString'] ?? ($r['DateUTC'] ?? '')));
+            if ($when === '') continue;
+            // Prefer the explicit "Created" record; otherwise fall back to the
+            // oldest history entry, which is the closest thing to it.
+            if (strcasecmp(trim((string)($r['Changes'] ?? '')), 'Created') === 0) return $when;
+            if ($earliest === '' || $when < $earliest) $earliest = $when;
+        }
+        return $earliest;
     }
 
     private static function billLineDescriptions(array $auth, string $invoiceId): array
@@ -537,6 +574,16 @@ final class XeroApiClient implements XeroClientInterface
         if ($d === '') return '';
         if (preg_match('/^(\d{4}-\d{2}-\d{2})/', $d, $m)) return $m[1];
         if (preg_match('#/Date\((-?\d+)#', $d, $m)) return gmdate('Y-m-d', (int)round(((int)$m[1]) / 1000));
+        return '';
+    }
+
+    /** Same shapes as xeroDate(), but keeping the time — UTC "yyyy-mm-dd hh:mm:ss". */
+    private static function xeroDateTime(string $d): string
+    {
+        $d = trim($d);
+        if ($d === '') return '';
+        if (preg_match('/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})/', $d, $m)) return $m[1] . ' ' . $m[2];
+        if (preg_match('#/Date\((-?\d+)#', $d, $m)) return gmdate('Y-m-d H:i:s', (int)round(((int)$m[1]) / 1000));
         return '';
     }
 }

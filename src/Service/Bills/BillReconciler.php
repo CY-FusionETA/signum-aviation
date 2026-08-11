@@ -24,6 +24,9 @@ use App\Service\Xero\XeroOAuth;
  */
 final class BillReconciler
 {
+    /** Max created-in-Xero History lookups per refresh (Xero allows 60 calls/min). */
+    private const CREATED_LOOKUPS_PER_REFRESH = 30;
+
     /** @return array{ok:bool, summary?:array, error?:string} */
     public static function refresh(): array
     {
@@ -41,10 +44,23 @@ final class BillReconciler
 
         $trips = TripRepo::all();
         $sum = ['pulled' => 0, 'matched' => 0, 'ambiguous' => 0, 'review' => 0, 'tagged' => 0, 'approved' => 0, 'retired' => $retired];
+        // The created-in-Xero timestamp costs one History call per bill, so it is
+        // only ever fetched for bills that don't have it yet. Capped so a large
+        // first sync can't burn through Xero's 60-calls-a-minute budget — the
+        // remainder is picked up by the next refresh.
+        $createdLookups = 0;
         foreach ($res['bills'] as $bill) {
             if (($bill['invoice_id'] ?? '') === '') continue;
             $match = BillMatcher::match($bill, $trips);
             $row = BillRepo::upsert($tenantId, $bill, $match);
+            if (($row['xero_created_at'] ?? '') === '' && $createdLookups < self::CREATED_LOOKUPS_PER_REFRESH) {
+                $createdLookups++;
+                $createdAt = $client->billCreatedAt((string)$bill['invoice_id']);
+                if ($createdAt !== '') {
+                    BillRepo::setXeroCreatedAt((int)$row['id'], $createdAt);
+                    $row['xero_created_at'] = $createdAt;
+                }
+            }
             // Reflect Xero-side approval: an AUTHORISED/PAID bill linked to a trip
             // is approved (whether it was approved here or directly in Xero).
             if (in_array((string)($bill['status'] ?? ''), ['AUTHORISED', 'PAID'], true)
