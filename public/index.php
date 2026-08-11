@@ -782,11 +782,9 @@ function render_bills(bool $connected, string $tenant, string $tenantId): void {
         return '<span class="pill '.$cl.'">'.e($t).'</span>';
     };
     ?>
-    <p class="lede">Supplier bills created in Xero, matched to a trip in your master list. Tag writes the <b>trip number</b> into the bill's description (the "Trip No:" line). Approving a trip's bills (on the <a class="link" href="<?= e(base()) ?>/?view=trips">Trips</a> tab) authorises them in Xero, and once all of a trip's bills are approved and every leg is costed, the client invoice is raised automatically.</p>
-
     <div class="banner <?= $connected ? 'on' : 'off' ?>">
       <div class="binfo"><span class="dot"></span>
-        <div><?= $connected ? '<b>Reading '.e($tenant).'</b> <span class="muted">· must be the same org your bills are created in</span>' : '<b>Not connected to Xero</b> <span class="muted">· connect an org to pull bills</span>' ?></div>
+        <div><?= $connected ? '<b>Reading '.e($tenant).'</b>' : '<b>Not connected to Xero</b> <span class="muted">· connect an org to pull bills</span>' ?></div>
       </div>
       <div class="bactions">
         <form method="post" action="<?= e(base()) ?>/bills/refresh"><input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>"><button class="btn primary sm" <?= $connected?'':'disabled' ?>>Refresh from Xero</button></form>
