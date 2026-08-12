@@ -521,7 +521,7 @@ function render_access_log(): void {
       <div class="tile"><div class="tnum"<?= $s['failed'] ? ' style="color:#b42318"' : '' ?>><?= $s['failed'] ?></div><div class="tlbl">Failed attempts</div></div>
     </section>
     <div class="card">
-      <p class="muted" style="margin:0 0 12px">Every sign-in: which account, from where, on what device. Visible to you only · times are UTC.</p>
+      <p class="muted" style="margin:0 0 12px">Every sign-in: which account, from where, on what device. Visible to you only · times are Malaysia time (UTC+8).</p>
       <table class="grid"><thead><tr><th>When</th><th>Account</th><th>Result</th><th>IP address</th><th>Location</th><th>Device</th></tr></thead><tbody>
       <?php if (!$rows): ?>
         <tr><td colspan="6" class="muted">No sign-ins recorded yet — they appear here as people sign in.</td></tr>
@@ -530,7 +530,7 @@ function render_access_log(): void {
         $loc = trim(((string)$r['city']) . ((($r['city'] ?? '') !== '' && ($r['country'] ?? '') !== '') ? ', ' : '') . (string)$r['country']);
       ?>
         <tr>
-          <td class="nowrap mono"><?= e((string)$r['ts']) ?></td>
+          <td class="nowrap mono"><?= e(local_dt($r['ts'] ?? '', 'd M Y') ?: '—') ?><div class="muted small"><?= e(local_dt($r['ts'] ?? '', 'H:i:s')) ?></div></td>
           <td><?= ($r['email'] ?? '') !== '' ? e((string)$r['email']) : '<span class="muted">—</span>' ?></td>
           <td><span class="pill <?= (string)$r['result'] === 'success' ? 'green' : 'amber' ?>"><?= e((string)$r['result']) ?></span></td>
           <td class="mono"><?= e((string)$r['ip']) ?></td>
