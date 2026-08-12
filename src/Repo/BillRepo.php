@@ -51,6 +51,7 @@ final class BillRepo
             'supplier'            => (string)($bill['supplier'] ?? ''),
             'bill_date'           => (string)($bill['bill_date'] ?? ''),
             'reference'           => (string)($bill['reference'] ?? ''),
+            'xero_status'         => strtoupper((string)($bill['status'] ?? '')),
             'total'               => $bill['total'] ?? null,
             'currency'            => (string)($bill['currency'] ?? ''),
             'currency_rate'       => $bill['currency_rate'] ?? null,
@@ -138,6 +139,16 @@ final class BillRepo
     public static function setXeroCreatedAt(int $id, string $utc): void
     {
         Db::q("UPDATE xero_bills SET xero_created_at=? WHERE id=?", [$utc, $id]);
+    }
+
+    /**
+     * Store the bill's latest manual note from Xero. Refreshed on every pull, so
+     * it always mirrors the newest "Add Note" on the bill. Written outside upsert()
+     * so it never interferes with the match/tag/approve columns.
+     */
+    public static function setRemarks(int $id, string $remarks): void
+    {
+        Db::q("UPDATE xero_bills SET remarks=? WHERE id=?", [$remarks, $id]);
     }
 
     public static function allForTenant(string $tenantId): array

@@ -24,8 +24,9 @@ use App\Service\Xero\XeroOAuth;
  */
 final class BillReconciler
 {
-    /** Max created-in-Xero History lookups per refresh (Xero allows 60 calls/min). */
-    private const CREATED_LOOKUPS_PER_REFRESH = 30;
+    /** Max bill-History lookups per refresh (Xero allows 60 calls/min). One call
+     *  per bill returns both its created-in-Xero time and its latest note. */
+    private const HISTORY_LOOKUPS_PER_REFRESH = 40;
 
     /** @return array{ok:bool, summary?:array, error?:string} */
     public static function refresh(): array
@@ -43,24 +44,37 @@ final class BillReconciler
         $retired = BillRepo::retireMissing($tenantId, $keep);
 
         $trips = TripRepo::all();
-        $sum = ['pulled' => 0, 'matched' => 0, 'ambiguous' => 0, 'review' => 0, 'tagged' => 0, 'approved' => 0, 'retired' => $retired];
-        // The created-in-Xero timestamp costs one History call per bill, so it is
-        // only ever fetched for bills that don't have it yet. Capped so a large
-        // first sync can't burn through Xero's 60-calls-a-minute budget — the
-        // remainder is picked up by the next refresh.
-        $createdLookups = 0;
+        $sum = ['pulled' => 0, 'matched' => 0, 'ambiguous' => 0, 'review' => 0, 'tagged' => 0, 'approved' => 0, 'auto_tagged' => 0, 'retired' => $retired];
+        // One History call per bill gives both its created-in-Xero time (stored
+        // once) and its latest note (refreshed every pull). Capped so a large sync
+        // can't burn through Xero's 60-calls-a-minute budget — the remainder is
+        // picked up by the next refresh.
+        $historyLookups = 0;
         foreach ($res['bills'] as $bill) {
             if (($bill['invoice_id'] ?? '') === '') continue;
             $match = BillMatcher::match($bill, $trips);
             $row = BillRepo::upsert($tenantId, $bill, $match);
-            if (($row['xero_created_at'] ?? '') === '' && $createdLookups < self::CREATED_LOOKUPS_PER_REFRESH) {
-                $createdLookups++;
-                $createdAt = $client->billCreatedAt((string)$bill['invoice_id']);
-                if ($createdAt !== '') {
-                    BillRepo::setXeroCreatedAt((int)$row['id'], $createdAt);
-                    $row['xero_created_at'] = $createdAt;
+
+            if ($historyLookups < self::HISTORY_LOOKUPS_PER_REFRESH) {
+                $historyLookups++;
+                $hist = $client->billHistory((string)$bill['invoice_id']);
+                if (($row['xero_created_at'] ?? '') === '' && $hist['created'] !== '') {
+                    BillRepo::setXeroCreatedAt((int)$row['id'], $hist['created']);
+                    $row['xero_created_at'] = $hist['created'];
+                }
+                if ((string)($row['remarks'] ?? '') !== $hist['note']) {
+                    BillRepo::setRemarks((int)$row['id'], $hist['note']);
+                    $row['remarks'] = $hist['note'];
                 }
             }
+
+            // Auto-tag: a bill matched to exactly one trip has its trip number
+            // pushed into Xero straight away — no one has to press Tag.
+            if ((string)$row['match_status'] === 'matched' && !empty(self::tag((int)$row['id'])['ok'])) {
+                $row = BillRepo::findById((int)$row['id']);
+                $sum['auto_tagged']++;
+            }
+
             // Reflect Xero-side approval: an AUTHORISED/PAID bill linked to a trip
             // is approved (whether it was approved here or directly in Xero).
             if (in_array((string)($bill['status'] ?? ''), ['AUTHORISED', 'PAID'], true)
@@ -177,14 +191,17 @@ final class BillReconciler
         return ['ok' => false, 'error' => $err];
     }
 
-    /** Manually assign a review/ambiguous bill to a trip. @return array{ok:bool, error?:string} */
+    /**
+     * Manually key a review/ambiguous bill to a trip and push the trip number
+     * into Xero (tag) in the same step. @return array{ok:bool, error?:string}
+     */
     public static function assign(int $billId, int $tripId): array
     {
         if (!BillRepo::findById($billId)) return ['ok' => false, 'error' => 'Bill not found.'];
         $trip = TripRepo::findById($tripId);
         if (!$trip) return ['ok' => false, 'error' => 'Trip not found.'];
         BillRepo::setMatch($billId, $trip);
-        return ['ok' => true];
+        return self::tag($billId);
     }
 
     /** Tag every matched-but-untagged bill. @return array{tagged:int, failed:int} */

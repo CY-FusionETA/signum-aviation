@@ -264,7 +264,8 @@ if ($path === '/bills/refresh' && $method === 'POST') {
     $res = BillReconciler::refresh();
     if (!empty($res['ok'])) {
         $s = $res['summary'];
-        $_SESSION['flash_ok'] = "Pulled {$s['pulled']} draft bill(s): {$s['matched']} matched, {$s['ambiguous']} ambiguous, {$s['review']} need review.";
+        $_SESSION['flash_ok'] = "Pulled {$s['pulled']} bill(s): {$s['auto_tagged']} auto-tagged, "
+            . ($s['ambiguous'] + $s['review']) . " need a trip keyed in by hand.";
     } else {
         $_SESSION['flash_err'] = 'Refresh failed: ' . ($res['error'] ?? 'unknown');
     }
@@ -280,10 +281,22 @@ if ($path === '/bills/tag' && $method === 'POST') {
 }
 if ($path === '/bills/assign' && $method === 'POST') {
     csrf_check();
-    $res = BillReconciler::assign((int)($_POST['id'] ?? 0), (int)($_POST['trip_id'] ?? 0));
+    $billId  = (int)($_POST['id'] ?? 0);
+    $tripId  = (int)($_POST['trip_id'] ?? 0);
+    $tripNum = trim((string)($_POST['trip_number'] ?? ''));
+    // Manual key-in: resolve the typed trip number against the LEON master list.
+    if ($tripId === 0 && $tripNum !== '') {
+        $t = TripRepo::findByNumber($tripNum);
+        if (!$t) {
+            $_SESSION['flash_err'] = "No trip “{$tripNum}” in the LEON master list — check the number.";
+            redirect('/?view=bills');
+        }
+        $tripId = (int)$t['id'];
+    }
+    $res = BillReconciler::assign($billId, $tripId);
     $_SESSION[!empty($res['ok']) ? 'flash_ok' : 'flash_err'] = !empty($res['ok'])
-        ? 'Bill matched to the trip — you can tag it now.'
-        : 'Assign failed: ' . ($res['error'] ?? 'unknown');
+        ? 'Trip number keyed in and pushed to the bill in Xero.'
+        : 'Manual tag failed: ' . ($res['error'] ?? 'unknown');
     redirect('/?view=bills');
 }
 if ($path === '/trips/approve' && $method === 'POST') {
@@ -661,6 +674,7 @@ function render_trips(array $trips, bool $connected, string $tenant): void {
           <input type="search" id="q" class="search" placeholder="Search trip, client, aircraft, route…">
           <select id="fEntity" class="fsel"><option value="">All entities</option><option value="INC">Inc</option><option value="LTD">Ltd</option></select>
           <select id="fStatus" class="fsel"><option value="">All trips</option><option value="matched">Matched</option><option value="unmatched">Not matched</option><option value="ready">Ready to invoice</option><option value="partial">Partly costed</option></select>
+          <select id="fApprove" class="fsel"><option value="">Any approval</option><option value="notapproved">Not approved</option><option value="approved">Approved</option><option value="invoiced">Invoiced</option></select>
           <span class="spacer"></span>
           <button class="btn danger" type="submit" id="delsel" formnovalidate><span id="selcount">0</span> selected · Delete</button>
         </div>
@@ -812,6 +826,12 @@ function render_bills(bool $connected, string $tenant, string $tenantId): void {
         [$cl,$t] = $m[$s] ?? ['gray', ucfirst($s)];
         return '<span class="pill '.$cl.'">'.e($t).'</span>';
     };
+    // The bill's own status in Xero (distinct from the tag/approve workflow above).
+    $xpill = function(string $s): string {
+        $m = ['DRAFT'=>['gray','Draft'],'SUBMITTED'=>['amber','Awaiting approval'],'AUTHORISED'=>['blue','Awaiting payment'],'PAID'=>['green','Paid']];
+        [$cl,$t] = $m[strtoupper($s)] ?? ['gray', $s !== '' ? ucfirst(strtolower($s)) : '—'];
+        return '<span class="pill '.$cl.'">'.e($t).'</span>';
+    };
     ?>
     <div class="banner <?= $connected ? 'on' : 'off' ?>">
       <div class="binfo"><span class="dot"></span>
@@ -838,24 +858,33 @@ function render_bills(bool $connected, string $tenant, string $tenantId): void {
       <?php elseif (!$bills): ?>
         <div class="empty">No bills pulled yet. Click <b>Refresh from Xero</b> to fetch draft supplier bills and match them to trips.</div>
       <?php else: ?>
-        <?php if ($c['matched']): ?>
         <div class="toolbar">
-          <span class="muted"><?= $c['matched'] ?> matched bill(s) ready to tag</span><span class="spacer"></span>
+          <select id="fBillStatus" class="fsel">
+            <option value="">All statuses</option>
+            <option value="DRAFT">Draft</option>
+            <option value="SUBMITTED">Awaiting approval</option>
+            <option value="AUTHORISED">Awaiting payment</option>
+            <option value="PAID">Paid</option>
+          </select>
+          <span class="spacer"></span>
+          <?php if ($c['matched']): ?>
+          <span class="muted"><?= $c['matched'] ?> matched bill(s) ready to tag</span>
           <form method="post" action="<?= e(base()) ?>/bills/tag-all" onsubmit="return confirm('Tag all <?= $c['matched'] ?> matched bill(s) with their trip number in Xero?')">
-            <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>"><button class="btn primary">Tag all matched</button></form>
+            <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>"><button class="btn primary sm">Tag all matched</button></form>
+          <?php endif; ?>
         </div>
-        <?php endif; ?>
+        <datalist id="tripnums"><?php foreach ($allTrips as $t): ?><option value="<?= e($t['trip_number']) ?>"><?= e(($t['client_name'] ?: 'no client').' · '.$t['aircraft']) ?></option><?php endforeach; ?></datalist>
         <div class="tablewrap">
         <table class="grid"><thead><tr>
           <th>Created in Xero</th><th>Supplier</th><th>Bill</th><th>Invoice date</th><th class="num">Amount</th>
-          <th>Extracted</th><th>Matched trip → client</th><th>Status</th><th></th>
+          <th>Extracted</th><th>Matched trip → client</th><th>In Xero</th><th>Status</th><th>Remarks</th><th></th>
         </tr></thead><tbody>
         <?php foreach ($bills as $b):
             $ex      = trim(implode(' · ', array_filter([$b['ex_tail'], $b['ex_airport'], $b['ex_date']])));
             $xeroUrl = xero_bill_url((string)$b['xero_invoice_id']);
             $created = local_dt($b['xero_created_at'] ?? '');
         ?>
-          <tr>
+          <tr data-xstatus="<?= e(strtoupper((string)($b['xero_status'] ?? ''))) ?>">
             <td class="nowrap"><?php if ($created !== ''): ?>
                 <?= e(local_dt($b['xero_created_at'], 'd M Y')) ?>
                 <div class="muted small"><?= e(local_dt($b['xero_created_at'], 'H:i')) ?></div>
@@ -880,7 +909,9 @@ function render_bills(bool $connected, string $tenant, string $tenantId): void {
               endif; ?></td>
             <td class="mono" style="font-size:12px"><?= e($ex ?: '—') ?></td>
             <td><?php if ($b['matched_trip_number']): ?><span class="mono"><?= e($b['matched_trip_number']) ?></span> <span class="muted">→ <?= e($b['matched_client'] ?: 'no client') ?></span><?php else: ?><span class="muted">—</span><?php endif; ?></td>
+            <td><?= $xpill((string)($b['xero_status'] ?? '')) ?></td>
             <td><?= $bpill((string)$b['match_status']) ?><?= !empty($b['xero_last_error']) ? ' <span class="warnmark" title="'.e($b['xero_last_error']).'">!</span>' : '' ?></td>
+            <td><?php $rm = trim((string)($b['remarks'] ?? '')); if ($rm !== ''): ?><span class="billdesc" title="<?= e($rm) ?>"><?= e(mb_strimwidth($rm, 0, 40, '…')) ?></span><?php else: ?><span class="muted">—</span><?php endif; ?></td>
             <td class="nowrap">
               <?php if ($b['match_status']==='approved'): ?>
                 <span class="muted">✓ Approved</span>
@@ -889,12 +920,12 @@ function render_bills(bool $connected, string $tenant, string $tenantId): void {
               <?php elseif ($b['match_status']==='matched'): ?>
                 <form method="post" action="<?= e(base()) ?>/bills/tag" style="display:inline"><input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>"><input type="hidden" name="id" value="<?= (int)$b['id'] ?>"><button class="btn sm">Tag <?= e($b['matched_trip_number']) ?></button></form>
               <?php else: ?>
-                <form method="post" action="<?= e(base()) ?>/bills/assign" class="assignform">
+                <form method="post" action="<?= e(base()) ?>/bills/assign" class="assignform"
+                      onsubmit="return this.trip_number.value.trim() !== '';"
+                      title="No trip found — key in the LEON trip number and it's pushed to the bill in Xero">
                   <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>"><input type="hidden" name="id" value="<?= (int)$b['id'] ?>">
-                  <select name="trip_id" required><option value="">Assign trip…</option>
-                    <?php foreach ($allTrips as $t): ?><option value="<?= (int)$t['id'] ?>"><?= e($t['trip_number'].' — '.($t['client_name'] ?: 'no client').' · '.$t['aircraft']) ?></option><?php endforeach; ?>
-                  </select>
-                  <button class="btn sm">Assign</button>
+                  <input type="text" name="trip_number" list="tripnums" placeholder="Key in trip no…" autocomplete="off" required>
+                  <button class="btn sm">Tag</button>
                 </form>
               <?php endif; ?>
             </td>
@@ -904,6 +935,17 @@ function render_bills(bool $connected, string $tenant, string $tenantId): void {
         </div>
       <?php endif; ?>
     </section>
+    <script>
+    (function(){
+      var sel = document.getElementById('fBillStatus'); if (!sel) return;
+      function apply(){ var v = sel.value;
+        document.querySelectorAll('tr[data-xstatus]').forEach(function(r){
+          r.style.display = (!v || r.getAttribute('data-xstatus') === v) ? '' : 'none';
+        });
+      }
+      sel.addEventListener('change', apply);
+    })();
+    </script>
     <?php
 }
 
@@ -944,12 +986,15 @@ const rowsEl = $('#rows'); if (!rowsEl) { /* not on trips view */ } else {
   function dates(t){ return t.end && t.end !== t.start ? `${t.start} → ${t.end}` : (t.start || ''); }
   function matches(t){
     const q = $('#q').value.trim().toLowerCase();
-    const fe = $('#fEntity').value, fs = $('#fStatus').value;
+    const fe = $('#fEntity').value, fs = $('#fStatus').value, fa = $('#fApprove').value;
     if (fe && t.entity !== fe) return false;
     if (fs === 'matched'   && !(t.bills > 0)) return false;
     if (fs === 'unmatched' && t.bills > 0)    return false;
     if (fs === 'ready'     && t.cost !== 'ready')   return false;
     if (fs === 'partial'   && t.cost !== 'partial') return false;
+    if (fa === 'invoiced'    && !t.invoiced) return false;
+    if (fa === 'approved'    && !(t.approved && !t.invoiced)) return false;
+    if (fa === 'notapproved' && !(t.bills > 0 && !t.approved && !t.invoiced)) return false;
     if (q){ const hay = `${t.trip} ${t.client} ${t.aircraft} ${t.route} ${t.entity}`.toLowerCase(); if (!hay.includes(q)) return false; }
     return true;
   }
@@ -1065,6 +1110,7 @@ const rowsEl = $('#rows'); if (!rowsEl) { /* not on trips view */ } else {
   });
   ['input','change'].forEach(ev=>{ $('#q').addEventListener(ev,render); });
   $('#fEntity').addEventListener('change',render); $('#fStatus').addEventListener('change',render);
+  $('#fApprove').addEventListener('change',render);
   document.querySelectorAll('th.sortable').forEach(th=>th.addEventListener('click',()=>{
     const k=th.dataset.key; if(sortKey===k) sortDir*=-1; else {sortKey=k; sortDir=1;}
     document.querySelectorAll('th.sortable').forEach(x=>x.classList.remove('asc','desc'));
@@ -1268,7 +1314,7 @@ th.actcol,td.actcol{width:38px;padding-left:0;padding-right:8px;text-align:right
 .empty{padding:26px;text-align:center;color:var(--mut);border:1px dashed var(--line);border-radius:10px}
 .billdesc{font-size:11px;color:var(--mut);max-width:230px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
 .assignform{display:flex;gap:6px;align-items:center}
-.assignform select{width:auto;min-width:150px;max-width:220px;padding:5px 8px;font-size:12px}
+.assignform select,.assignform input[type=text]{width:auto;min-width:130px;max-width:200px;padding:5px 8px;font-size:12px}
 
 .modal{position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:20px}
 .modal[hidden]{display:none}

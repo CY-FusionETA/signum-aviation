@@ -442,6 +442,28 @@ $lines4 = [['Description' => "X\nTrip No:"]];
 check('tag keeps alnum/slash trip numbers literal', $XC::embedTripInLines($lines4, '35503/EGJJ')[0]['Description'],
     "X\nTrip No: 35503/EGJJ");
 
+// --- 15. New: Xero status + remarks storage, findByNumber, refresh keys ---
+$bx = \App\Repo\BillRepo::upsert('T3', [
+    'invoice_id' => 'stat-1', 'supplier' => 'ASA', 'status' => 'paid',
+    'description' => 'Handling',
+], $M::match(['description'=>'Handling'], $mtrips));
+check('upsert stores Xero status (uppercased)', $bx['xero_status'], 'PAID');
+check('  → remarks blank until fetched', (string)($bx['remarks'] ?? ''), '');
+\App\Repo\BillRepo::setRemarks((int)$bx['id'], 'Called supplier — pay by 15th');
+$bx2 = \App\Repo\BillRepo::findById((int)$bx['id']);
+check('setRemarks stores the latest note', $bx2['remarks'], 'Called supplier — pay by 15th');
+$bx3 = \App\Repo\BillRepo::upsert('T3', ['invoice_id'=>'stat-1','status'=>'authorised'], $M::match(['description'=>'Handling'], $mtrips));
+check('re-upsert refreshes Xero status', $bx3['xero_status'], 'AUTHORISED');
+check('  → remarks survive re-upsert', $bx3['remarks'], 'Called supplier — pay by 15th');
+
+check('findByNumber resolves a real trip', TripRepo::findByNumber('99751')['trip_number'] ?? '', '99751');
+check('findByNumber unknown → null', TripRepo::findByNumber('does-not-exist'), null);
+check('findByNumber blank → null', TripRepo::findByNumber('  '), null);
+
+// billHistory: created + latest note extracted from Xero History records.
+$hist = (new \App\Service\Xero\XeroStubClient())->billHistory('x');
+check('stub billHistory shape', array_keys($hist), ['created','note']);
+
 echo "\n" . str_repeat('=', 40) . "\n";
 printf("TOTAL: %d passed, %d failed\n", $pass, $fail);
 exit($fail === 0 ? 0 : 1);

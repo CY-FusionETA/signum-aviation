@@ -75,7 +75,7 @@ final class XeroApiClient implements XeroClientInterface
             $auth = XeroOAuth::accessToken();
             if (!$auth) return ['ok' => false, 'bills' => [], 'error' => 'Xero is not connected.'];
 
-            $where = rawurlencode('Type=="ACCPAY" AND (Status=="DRAFT" OR Status=="SUBMITTED" OR Status=="AUTHORISED")');
+            $where = rawurlencode('Type=="ACCPAY" AND (Status=="DRAFT" OR Status=="SUBMITTED" OR Status=="AUTHORISED" OR Status=="PAID")');
             [$code, $body] = XeroOAuth::http('GET', self::API . 'Invoices?where=' . $where, [
                 'Authorization: Bearer ' . $auth['access_token'],
                 'Xero-tenant-id: ' . $auth['tenant_id'],
@@ -164,33 +164,42 @@ final class XeroApiClient implements XeroClientInterface
     }
 
     /**
-     * True creation timestamp from the invoice's History ("Created" record). The
-     * Invoices endpoint has no created date, and UpdatedDateUTC shifts whenever we
-     * tag or approve — so a bill would otherwise appear to be "created" when we
-     * last touched it. Returns '' on any error; a missing timestamp never blocks a pull.
+     * Read the bill's Xero History once and return both its creation timestamp and
+     * its latest manual note ("Add Note"). The Invoices endpoint has no created
+     * date, and UpdatedDateUTC shifts whenever we tag or approve — so creation is
+     * read from the "Created" history record. Notes appear as history records with
+     * Changes "Note", their text in Details; the newest one is the bill's remark.
+     * Either field is '' if absent; any error yields both '' and never blocks a pull.
+     * @return array{created:string, note:string}
      */
-    public function billCreatedAt(string $invoiceId): string
+    public function billHistory(string $invoiceId): array
     {
         $auth = XeroOAuth::token();
-        if (!$auth || $invoiceId === '') return '';
+        if (!$auth || $invoiceId === '') return ['created' => '', 'note' => ''];
         [$code, $body] = XeroOAuth::http('GET', self::API . 'Invoices/' . rawurlencode($invoiceId) . '/History', [
             'Authorization: Bearer ' . $auth['access_token'],
             'Xero-tenant-id: ' . $auth['tenant_id'],
             'Accept: application/json',
         ]);
-        if ($code < 200 || $code >= 300) return '';
+        if ($code < 200 || $code >= 300) return ['created' => '', 'note' => ''];
         $records = json_decode($body, true)['HistoryRecords'] ?? [];
-        if (!is_array($records)) return '';
-        $earliest = '';
+        if (!is_array($records)) return ['created' => '', 'note' => ''];
+        $created = ''; $earliest = '';
+        $note = ''; $noteWhen = '';
         foreach ($records as $r) {
-            $when = self::xeroDateTime((string)($r['DateUTCString'] ?? ($r['DateUTC'] ?? '')));
-            if ($when === '') continue;
-            // Prefer the explicit "Created" record; otherwise fall back to the
-            // oldest history entry, which is the closest thing to it.
-            if (strcasecmp(trim((string)($r['Changes'] ?? '')), 'Created') === 0) return $when;
-            if ($earliest === '' || $when < $earliest) $earliest = $when;
+            $when    = self::xeroDateTime((string)($r['DateUTCString'] ?? ($r['DateUTC'] ?? '')));
+            $changes = trim((string)($r['Changes'] ?? ''));
+            if ($when !== '') {
+                // Prefer the explicit "Created" record; else the oldest entry.
+                if (strcasecmp($changes, 'Created') === 0 && $created === '') $created = $when;
+                if ($earliest === '' || $when < $earliest) $earliest = $when;
+            }
+            if (strcasecmp($changes, 'Note') === 0) {
+                $detail = trim((string)($r['Details'] ?? ''));
+                if ($detail !== '' && ($noteWhen === '' || $when >= $noteWhen)) { $noteWhen = $when; $note = $detail; }
+            }
         }
-        return $earliest;
+        return ['created' => $created !== '' ? $created : $earliest, 'note' => $note];
     }
 
     private static function billLineDescriptions(array $auth, string $invoiceId): array

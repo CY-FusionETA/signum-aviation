@@ -14,9 +14,9 @@ final class XeroStubClient implements XeroClientInterface
         return ['ok' => false, 'bills' => [], 'error' => 'Xero is not connected — connect an org to reconcile bills.'];
     }
 
-    public function billCreatedAt(string $invoiceId): string
+    public function billHistory(string $invoiceId): array
     {
-        return '';
+        return ['created' => '', 'note' => ''];
     }
 
     public function tagBill(string $invoiceId, string $reference): array

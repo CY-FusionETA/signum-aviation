@@ -65,6 +65,8 @@ CREATE TABLE IF NOT EXISTS xero_bills (
   bill_date           TEXT,               -- the bill's invoice date, ISO yyyy-mm-dd
   xero_created_at     TEXT,               -- when the bill was created in Xero, UTC "yyyy-mm-dd hh:mm:ss"
   reference           TEXT,
+  xero_status         TEXT,               -- Xero bill status: DRAFT | SUBMITTED | AUTHORISED | PAID
+  remarks             TEXT,               -- latest manual "Add Note" on the bill in Xero
   total               REAL,               -- amount in the bill's own currency
   currency            TEXT,               -- the bill's currency code
   currency_rate       REAL,               -- Xero rate: base units per 1 bill-currency unit

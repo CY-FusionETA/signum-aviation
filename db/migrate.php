@@ -19,6 +19,8 @@ $add = [
         'base_currency'   => 'TEXT',
         'base_total'      => 'REAL',
         'xero_created_at' => 'TEXT',
+        'xero_status'     => 'TEXT',
+        'remarks'         => 'TEXT',
     ],
     'leon_trips' => [
         'waived_legs' => 'TEXT',

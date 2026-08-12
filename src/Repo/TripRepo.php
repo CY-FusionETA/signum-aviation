@@ -18,6 +18,14 @@ final class TripRepo
         return Db::one("SELECT * FROM leon_trips WHERE id = ?", [$id]);
     }
 
+    /** First trip in the master list with this trip number (any entity), or null. */
+    public static function findByNumber(string $tripNumber): ?array
+    {
+        $tripNumber = trim($tripNumber);
+        if ($tripNumber === '') return null;
+        return Db::one("SELECT * FROM leon_trips WHERE trip_number = ? ORDER BY start_date DESC LIMIT 1", [$tripNumber]);
+    }
+
     /**
      * Insert or update the trip's metadata (never touches the xero_* columns).
      * Returns [$row, $wasNew].
