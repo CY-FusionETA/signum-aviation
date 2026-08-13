@@ -66,6 +66,15 @@ var CONFIG = {
   DROP_URL: 'https://signum-aviation.fusioneta.com.my/drop',
   DROP_KEY: '471f2456249f2560c883cf561fec0091439af2ee8d919e5a',
 
+  // Unidash Inbox (execution log). INBOX_URL receives one POST per attachment
+  // sent (plus a heartbeat each run); WEBHOOK_URL is what we register with Wazzup
+  // (run setWebhook once) so the processor's WhatsApp replies land in the Inbox.
+  // Both authenticate with DROP_KEY. WEBHOOK_API_KEY is the Wazzup account key of
+  // the channel that talks to the processor (the one that receives its replies).
+  INBOX_URL:       'https://signum-aviation.fusioneta.com.my/inbox/log',
+  WEBHOOK_URL:     'https://signum-aviation.fusioneta.com.my/wazzup/webhook',
+  WEBHOOK_API_KEY: 'ef3eddf51f7d431ab2927e0d46a2dbf3',   // = WAZZUP_API_KEY by default
+
   // Gmail label your filter puts invoices under (create the filter first).
   SOURCE_LABEL:    'supplier-invoices',
   PROCESSED_LABEL: 'skyledger-processed',
@@ -94,6 +103,8 @@ function run() {
   var threads = GmailApp.search(query, 0, CONFIG.MAX_THREADS_PER_RUN);
   if (threads.length) Logger.log('Scanning %s new thread(s)', threads.length);
 
+  pingHeartbeat_();   // tell the Inbox the poller ran, even on idle minutes
+
   threads.forEach(function (thread) {
     var anyProcessed = false, anyFailed = false;
     thread.getMessages().forEach(function (msg) {
@@ -105,9 +116,11 @@ function run() {
           sendViaWazzup_(att, msg);
           props.setProperty(key, String(Date.now())); // record only on success
           anyProcessed = true;
+          logInbox_(msg, att, 'sent', '');
         } catch (err) {
           anyFailed = true;                            // not recorded → retried next run
           Logger.log('Send failed for "%s": %s', att.getName(), err);
+          logInbox_(msg, att, 'failed', String(err));
         }
       });
     });
@@ -207,6 +220,63 @@ function dropFile_(att) {
   var json = JSON.parse(body);
   if (!json.url) throw new Error('File-drop returned no url: ' + body.slice(0, 200));
   return json.url;
+}
+
+/**
+ * Log one attachment send to Unidash's Inbox (best-effort — a logging failure
+ * must never break intake, so this swallows its own errors).
+ *   status: 'sent' (handed to the processor) or 'failed' (send threw).
+ */
+function logInbox_(msg, att, status, error) {
+  if (!CONFIG.INBOX_URL) return;
+  try {
+    UrlFetchApp.fetch(CONFIG.INBOX_URL, {
+      method: 'post',
+      muteHttpExceptions: true,
+      payload: {
+        key:        CONFIG.DROP_KEY,
+        event_at:   new Date().toISOString(),
+        sender:     msg.getFrom(),
+        subject:    msg.getSubject(),
+        attachment: att.getName(),
+        size:       String(att.getSize()),
+        status:     status,
+        error:      error ? String(error).slice(0, 500) : '',
+      },
+    });
+  } catch (e) {
+    Logger.log('Inbox log failed: %s', e);
+  }
+}
+
+/** Tell the Inbox the poller ran (liveness), even on minutes with no invoice. */
+function pingHeartbeat_() {
+  if (!CONFIG.INBOX_URL) return;
+  try {
+    UrlFetchApp.fetch(CONFIG.INBOX_URL, {
+      method: 'post', muteHttpExceptions: true,
+      payload: { key: CONFIG.DROP_KEY, heartbeat: '1' },
+    });
+  } catch (e) { /* best-effort */ }
+}
+
+/**
+ * Run ONCE to point Wazzup's webhook at Unidash so the processor's WhatsApp
+ * replies (bill created / error) flow into the Inbox. API-type integrations set
+ * their webhook here rather than in the Wazzup UI. Safe to re-run.
+ */
+function setWebhook() {
+  var res = UrlFetchApp.fetch('https://api.wazzup24.com/v3/webhooks', {
+    method: 'patch',
+    contentType: 'application/json',
+    muteHttpExceptions: true,
+    headers: { Authorization: 'Bearer ' + (CONFIG.WEBHOOK_API_KEY || CONFIG.WAZZUP_API_KEY) },
+    payload: JSON.stringify({
+      webhooksUri: CONFIG.WEBHOOK_URL + '?key=' + encodeURIComponent(CONFIG.DROP_KEY),
+      subscriptions: { messagesAndStatuses: true, contactsAndDealsCreation: false, channelsUpdates: false, templateStatus: false },
+    }),
+  });
+  Logger.log('setWebhook → HTTP %s %s', res.getResponseCode(), res.getContentText().slice(0, 300));
 }
 
 /**

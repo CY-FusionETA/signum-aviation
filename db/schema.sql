@@ -135,3 +135,26 @@ CREATE TABLE IF NOT EXISTS trip_invoices (
   created_at          TEXT DEFAULT CURRENT_TIMESTAMP,
   UNIQUE (tenant_id, trip_id)
 );
+
+-- Module 1: Gmail intake execution log ("Inbox"). One row per attachment the
+-- poller sends for processing; the OCR/bill outcome is filled in later when the
+-- processor's reply arrives via the Wazzup webhook. source='gmail' delivery
+-- rows carry an ocr_status of pending until matched; source='processor' rows are
+-- replies that arrived without a pending delivery to attach to.
+CREATE TABLE IF NOT EXISTS inbox_events (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts             TEXT DEFAULT CURRENT_TIMESTAMP,   -- when Unidash recorded it (UTC)
+  event_at       TEXT,                             -- source event time (UTC)
+  source         TEXT,                             -- 'gmail' | 'processor'
+  sender         TEXT,                             -- email From (gmail) / reply sender
+  subject        TEXT,
+  attachment     TEXT,
+  att_size       INTEGER,
+  delivery       TEXT,                             -- 'sent' | 'failed' | ''
+  delivery_error TEXT,
+  ocr_status     TEXT,                             -- 'pending' | 'created' | 'error' | 'unknown' | ''
+  ocr_message    TEXT,                             -- raw reply text from the processor
+  ocr_at         TEXT,                             -- when the reply was captured (UTC)
+  wazzup_message_id TEXT                            -- inbound message id (dedupe)
+);
+CREATE INDEX IF NOT EXISTS idx_inbox_pending ON inbox_events (ocr_status, id);

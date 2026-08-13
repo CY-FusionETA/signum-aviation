@@ -19,6 +19,7 @@ use App\Service\Bills\BillReconciler;
 use App\Service\Invoices\InvoiceService;
 use App\Service\Invoices\CompletenessChecker;
 use App\Service\Xero\XeroOAuth;
+use App\Service\Inbox\InboxLog;
 
 session_start();
 
@@ -167,6 +168,51 @@ if ($method === 'GET' && preg_match('#^/drop/([a-f0-9]{32}\.(?:pdf|png|jpe?g|web
     header('Content-Length: ' . filesize($file));
     readfile($file);
     exit;
+}
+
+// --- Module 1: Gmail-intake execution log ("Inbox") -----------------
+// Both endpoints are called by external services (the Apps Script poller and
+// Wazzup), so they sit before the sign-in gate and authenticate with the same
+// drop.key shared secret the file-drop already uses.
+if ($path === '/inbox/log' && $method === 'POST') {
+    $key   = (string)(Settings::get('drop.key', '') ?: cfg('drop.key', ''));
+    $given = (string)($_POST['key'] ?? ($_GET['key'] ?? ''));
+    if ($key === '' || !hash_equals($key, $given)) { http_response_code(403); exit('Forbidden'); }
+    InboxLog::heartbeat();                                  // the poller ran
+    if (empty($_POST['heartbeat'])) {                       // …and it sent an attachment
+        InboxLog::recordDelivery([
+            'event_at'       => (string)($_POST['event_at'] ?? ''),
+            'sender'         => (string)($_POST['sender'] ?? ''),
+            'subject'        => (string)($_POST['subject'] ?? ''),
+            'attachment'     => (string)($_POST['attachment'] ?? ''),
+            'att_size'       => (int)($_POST['size'] ?? 0),
+            'delivery'       => (string)($_POST['status'] ?? ''),
+            'delivery_error' => (string)($_POST['error'] ?? ''),
+        ]);
+    }
+    header('Content-Type: application/json'); echo json_encode(['ok' => true]); exit;
+}
+if ($path === '/wazzup/webhook' && $method === 'POST') {
+    $key   = (string)(Settings::get('drop.key', '') ?: cfg('drop.key', ''));
+    $given = (string)($_GET['key'] ?? '');
+    if ($key === '' || !hash_equals($key, $given)) { http_response_code(403); exit('Forbidden'); }
+    $data = json_decode((string)file_get_contents('php://input'), true);
+    // Wazzup verifies the URL with a {"test":true} POST — it must get HTTP 200.
+    if (is_array($data) && !empty($data['test'])) { http_response_code(200); echo 'ok'; exit; }
+    $ocrNum = preg_replace('/\D+/', '', (string)(Settings::get('wazzup.wazzocr_number', '') ?: cfg('wazzup.wazzocr_number', '')));
+    foreach ((array)($data['messages'] ?? []) as $m) {
+        if (!is_array($m) || !empty($m['isEcho'])) continue;             // skip our own/outgoing
+        if (strtolower((string)($m['status'] ?? '')) !== 'inbound') continue; // received only
+        $chatId = preg_replace('/\D+/', '', (string)($m['chatId'] ?? ''));
+        if ($ocrNum !== '' && $chatId !== $ocrNum) continue;            // only the processor's line
+        InboxLog::recordReply(
+            (string)($m['messageId'] ?? ''),
+            (string)($m['text'] ?? ''),
+            (string)($m['contact']['name'] ?? $chatId),
+            (string)($m['dateTime'] ?? '')
+        );
+    }
+    http_response_code(200); echo 'ok'; exit;
 }
 
 if (!is_authed()) redirect('/login');
@@ -339,7 +385,7 @@ if ($path === '/invoices/create' && $method === 'POST') {
     redirect('/?view=invoices');
 }
 
-$view = in_array($_GET['view'] ?? '', ['dashboard', 'trips', 'bills', 'invoices', 'settings', 'access'], true) ? $_GET['view'] : 'dashboard';
+$view = in_array($_GET['view'] ?? '', ['dashboard', 'trips', 'bills', 'invoices', 'inbox', 'settings', 'access'], true) ? $_GET['view'] : 'dashboard';
 // The access log is superadmin-only. Anyone else asking for it by URL gets the
 // dashboard — the link is hidden for them, so a hand-typed ?view=access is the
 // only way to land here.
@@ -364,6 +410,7 @@ function icon(string $n): string {
         'invoice'   => '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h6"/>',
         'settings'  => '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 7 19.4a1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0-1.1-2.7H1a2 2 0 1 1 0-4h.1A1.6 1.6 0 0 0 2.6 7a1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H7a1.6 1.6 0 0 0 1-1.5V1a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 2.7 1.1 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V7a1.6 1.6 0 0 0 1.5 1H23a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/>',
         'lock'      => '<rect x="4" y="10.5" width="16" height="10.5" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/>',
+        'inbox'     => '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
     ][$n] ?? '';
     return '<svg class="nicon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' . $p . '</svg>';
 }
@@ -458,7 +505,7 @@ function render_home(string $view): void {
             'created' => (string)($t['created_at'] ?? ''), 'updated' => (string)($t['updated_at'] ?? ''),
         ];
     }
-    $titles = ['dashboard' => 'Dashboard', 'trips' => 'Trips', 'bills' => 'Bills', 'invoices' => 'Invoices', 'settings' => 'Settings', 'access' => 'Access log'];
+    $titles = ['dashboard' => 'Dashboard', 'trips' => 'Trips', 'bills' => 'Bills', 'invoices' => 'Invoices', 'inbox' => 'Inbox', 'settings' => 'Settings', 'access' => 'Access log'];
     $email = (string)($_SESSION['email'] ?? admin_email());
     $initial = strtoupper(substr($email, 0, 1) ?: 'S');
     ?><!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -472,6 +519,7 @@ function render_home(string $view): void {
         <a href="<?= e(base()) ?>/?view=trips" class="<?= $view==='trips'?'active':'' ?>"><?= icon('trips') ?><span class="lbl">Trips</span></a>
         <a href="<?= e(base()) ?>/?view=bills" class="<?= $view==='bills'?'active':'' ?>"><?= icon('bills') ?><span class="lbl">Bills</span></a>
         <a href="<?= e(base()) ?>/?view=invoices" class="<?= $view==='invoices'?'active':'' ?>"><?= icon('invoice') ?><span class="lbl">Invoices</span></a>
+        <a href="<?= e(base()) ?>/?view=inbox" class="<?= $view==='inbox'?'active':'' ?>"><?= icon('inbox') ?><span class="lbl">Inbox</span></a>
         <a href="<?= e(base()) ?>/?view=settings" class="<?= $view==='settings'?'active':'' ?>"><?= icon('settings') ?><span class="lbl">Settings</span></a>
         <?php if (can_view_access_log()): ?>
         <a href="<?= e(base()) ?>/?view=access" class="<?= $view==='access'?'active':'' ?>"><?= icon('lock') ?><span class="lbl">Access log</span></a>
@@ -497,6 +545,7 @@ function render_home(string $view): void {
           if ($view === 'trips')         render_trips($trips, $connected, $tenant);
           elseif ($view === 'bills')     render_bills($connected, $tenant, $tenantId);
           elseif ($view === 'invoices')  render_invoices($connected, $tenant, $tenantId);
+          elseif ($view === 'inbox')     render_inbox();
           elseif ($view === 'settings')  render_settings($connected, $tenant);
           elseif ($view === 'access')    render_access_log();
           else                           render_dashboard($stat, $js, $connected, $tenant);
@@ -549,6 +598,56 @@ function render_access_log(): void {
           <td class="mono"><?= e((string)$r['ip']) ?></td>
           <td><?= $loc !== '' ? e($loc) : '<span class="muted">—</span>' ?><?= ($r['isp'] ?? '') !== '' ? '<div class="muted small">' . e((string)$r['isp']) . '</div>' : '' ?></td>
           <td class="nowrap"><?= e($d['browser'] . ' · ' . $d['os']) ?><div class="muted small"><?= e($d['kind']) ?></div></td>
+        </tr>
+      <?php endforeach; endif; ?>
+      </tbody></table>
+    </div>
+    <?php
+}
+
+function render_inbox(): void {
+    $s    = InboxLog::stats();
+    $rows = InboxLog::rows(200);
+    $last = local_dt(InboxLog::lastRun(), 'd M Y H:i');
+    $dpill = fn(string $d) => $d === 'sent'
+        ? '<span class="pill green">Sent</span>'
+        : ($d === 'failed' ? '<span class="pill amber">Failed</span>' : '<span class="muted">—</span>');
+    $opill = function(string $st): string {
+        $m = ['created'=>['green','Created'],'error'=>['amber','Error'],'pending'=>['gray','Waiting'],'unknown'=>['blue','Replied']];
+        if (!isset($m[$st])) return '<span class="muted">—</span>';
+        [$cl,$t] = $m[$st];
+        return '<span class="pill '.$cl.'">'.e($t).'</span>';
+    };
+    ?>
+    <section class="tiles" style="grid-template-columns:repeat(4,1fr)">
+      <div class="tile"><div class="tnum"><?= $s['day'] ?></div><div class="tlbl">Sent (24h)</div></div>
+      <div class="tile"><div class="tnum green"><?= $s['created'] ?></div><div class="tlbl">Bills created</div></div>
+      <div class="tile"><div class="tnum"<?= $s['errors'] ? ' style="color:#b42318"' : '' ?>><?= $s['errors'] ?></div><div class="tlbl">Errors</div></div>
+      <div class="tile"><div class="tnum"><?= $s['pending'] ?></div><div class="tlbl">Awaiting result</div></div>
+    </section>
+    <div class="card">
+      <p class="muted" style="margin:0 0 12px">
+        Every supplier invoice the mailbox poller sends for processing is logged here — when, who sent it, the attachment, and whether the draft bill was created. Any error reported back appears in the Message column.
+        <?= $last !== '' ? ' · <b>Last checked</b> ' . e($last) : '' ?> · times are Malaysia time (UTC+8).
+      </p>
+      <table class="grid"><thead><tr>
+        <th>When</th><th>Sender</th><th>Attachment</th><th>Delivered</th><th>Bill created?</th><th>Message</th>
+      </tr></thead><tbody>
+      <?php if (!$rows): ?>
+        <tr><td colspan="6" class="muted">Nothing yet — entries appear here as invoice emails arrive and are sent for processing.</td></tr>
+      <?php else: foreach ($rows as $r):
+        $when = local_dt($r['event_at'] ?: ($r['ts'] ?? ''), 'd M Y');
+        $tm   = local_dt($r['event_at'] ?: ($r['ts'] ?? ''), 'H:i');
+        $msg  = trim((string)($r['delivery_error'] ?: $r['ocr_message']));
+      ?>
+        <tr>
+          <td class="nowrap mono"><?= e($when ?: '—') ?><div class="muted small"><?= e($tm) ?></div></td>
+          <td><?= ($r['sender'] ?? '') !== '' ? e((string)$r['sender']) : '<span class="muted">—</span>' ?>
+            <?php if (($r['source'] ?? '') === 'processor'): ?><div class="muted small">processor reply</div><?php endif; ?></td>
+          <td><?php if (($r['attachment'] ?? '') !== ''): ?><span class="mono" style="font-size:12px"><?= e((string)$r['attachment']) ?></span><?php else: ?><span class="muted">—</span><?php endif; ?></td>
+          <td><?= $dpill((string)($r['delivery'] ?? '')) ?></td>
+          <td><?= $opill((string)($r['ocr_status'] ?? '')) ?></td>
+          <td><?php if ($msg !== ''): ?><span class="billdesc" style="max-width:340px" title="<?= e($msg) ?>"><?= e(mb_strimwidth($msg, 0, 80, '…')) ?></span><?php else: ?><span class="muted">—</span><?php endif; ?></td>
         </tr>
       <?php endforeach; endif; ?>
       </tbody></table>

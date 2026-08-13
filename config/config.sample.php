@@ -57,4 +57,13 @@ return [
     'drop' => [
         'key' => '',   // e.g. bin2hex(random_bytes(24))
     ],
+
+    // Inbox (Module 1 execution log). The Gmail intake script POSTs each send to
+    // <base_url>/inbox/log, and Wazzup POSTs the processor's WhatsApp replies to
+    // <base_url>/wazzup/webhook — both authenticated with drop.key above.
+    // wazzocr_number is the processor's WhatsApp number, so replies from that line
+    // are recognised as bill-creation results.
+    'wazzup' => [
+        'wazzocr_number' => '60102300975',
+    ],
 ];

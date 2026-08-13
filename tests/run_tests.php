@@ -464,6 +464,39 @@ check('findByNumber blank → null', TripRepo::findByNumber('  '), null);
 $hist = (new \App\Service\Xero\XeroStubClient())->billHistory('x');
 check('stub billHistory shape', array_keys($hist), ['created','note']);
 
+// --- 16. Inbox: delivery log, reply classification, FIFO match ------
+$IL = '\App\Service\Inbox\InboxLog';
+check('classify: created', $IL::classify('Draft bill created in Xero ✅'), 'created');
+check('classify: error wins over bill mention', $IL::classify("Couldn't create the bill — invalid date"), 'error');
+check('classify: emoji error', $IL::classify('❌ processing failed'), 'error');
+check('classify: neutral → unknown', $IL::classify('Received, one moment'), 'unknown');
+check('classify: blank → unknown', $IL::classify('   '), 'unknown');
+
+// A sent delivery starts pending; a reply attaches to it (FIFO) and sets status.
+$id1 = $IL::recordDelivery(['event_at'=>'2026-08-13T01:00:00Z','sender'=>'ops@asa.com','attachment'=>'inv1.pdf','delivery'=>'sent']);
+$id2 = $IL::recordDelivery(['event_at'=>'2026-08-13T01:01:00Z','sender'=>'ops@asa.com','attachment'=>'inv2.pdf','delivery'=>'sent']);
+check('delivery stored pending', \App\Db::one("SELECT ocr_status FROM inbox_events WHERE id=?", [$id1])['ocr_status'], 'pending');
+$r1 = $IL::recordReply('wz-1', 'Bill created for ASA', 'Processor', '2026-08-13T01:02:00Z');
+check('reply matched a pending row', $r1['matched'], true);
+check('  → oldest pending got the result', \App\Db::one("SELECT ocr_status FROM inbox_events WHERE id=?", [$id1])['ocr_status'], 'created');
+check('  → newer delivery still pending', \App\Db::one("SELECT ocr_status FROM inbox_events WHERE id=?", [$id2])['ocr_status'], 'pending');
+
+// Duplicate webhook delivery (same message id) is ignored.
+$dup = $IL::recordReply('wz-1', 'Bill created for ASA', 'Processor', '2026-08-13T01:02:00Z');
+check('duplicate reply ignored', $dup['status'], 'duplicate');
+
+// A failed send never becomes pending, so it can't absorb a reply.
+$idF = $IL::recordDelivery(['event_at'=>'2026-08-13T01:03:00Z','attachment'=>'bad.pdf','delivery'=>'failed','delivery_error'=>'File-drop HTTP 500']);
+check('failed send is not pending', \App\Db::one("SELECT ocr_status FROM inbox_events WHERE id=?", [$idF])['ocr_status'], '');
+
+// Consume id2's pending slot, then an extra reply stands alone.
+$IL::recordReply('wz-2', 'created', 'Processor', '2026-08-13T01:04:00Z');
+$before = (int)\App\Db::scalar("SELECT COUNT(*) FROM inbox_events");
+$r3 = $IL::recordReply('wz-3', 'Error: unsupported file', 'Processor', '2026-08-13T01:05:00Z');
+check('no pending left → reply stands alone', $r3['matched'], false);
+check('  → standalone row added', (int)\App\Db::scalar("SELECT COUNT(*) FROM inbox_events"), $before + 1);
+check('  → classified as error', $r3['status'], 'error');
+
 echo "\n" . str_repeat('=', 40) . "\n";
 printf("TOTAL: %d passed, %d failed\n", $pass, $fail);
 exit($fail === 0 ? 0 : 1);
