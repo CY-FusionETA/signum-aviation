@@ -473,10 +473,14 @@ $exists   = "🤖 *AI bill analysis*\nInvoice No: Demo12345-SN030473\n⚠️ *Al
 $failmsg  = "🤖 *AI bill analysis*\nSupplier: X\n❌ Could not create the bill — missing account code";
 $progress = "🔍 Reading your image...";
 $opener   = "Signum Aviation Attachment from email";
+$analysis = "🤖 *AI bill analysis*\nSupplier: Signature Flight Support Ireland Ltd\nInvoice No: SN030488\n*Total: 1,595.50*";
+$needorg  = $analysis . "\n\n⚠️ *Action needed: pick the organisation*\nNo matching organisation found.";
 
 check('classify: draft bill created → success', $IL::classify($succ), 'success');
 check('classify: already exists → success', $IL::classify($exists), 'success');
 check('classify: analysis + error → failed', $IL::classify($failmsg), 'failed');
+check('classify: analysis only → note', $IL::classify($analysis), 'note');
+check('classify: action needed → note', $IL::classify($needorg), 'note');
 check('classify: explicit failure words → failed', $IL::classify('Sorry, could not create the bill'), 'failed');
 check('classify: progress ping → ignore', $IL::classify($progress), 'ignore');
 check('classify: old opener → ignore', $IL::classify($opener), 'ignore');
@@ -525,6 +529,43 @@ $ist = $IL::stats();
 check('stats: bills created (success)', $ist['created'], 1);
 check('stats: errors (failed result + failed send)', $ist['errors'], 2);
 check('stats: awaiting result', $ist['pending'], 0);
+
+// --- 17. Inbox: two-message replies + the match window ----------------
+// The processor sends the analysis first, then the create confirmation. The
+// analysis must NOT close the row, or the confirmation lands on the next
+// attachment and every later row is shifted by one (the SN030473 bug).
+$now  = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+$iso  = fn(int $mins) => $now->modify("$mins minutes")->format('Y-m-d\TH:i:s\Z');
+$aId  = $IL::recordDelivery(['event_at'=>$iso(-20),'attachment'=>'a.pdf','delivery'=>'sent']);
+$bId  = $IL::recordDelivery(['event_at'=>$iso(-15),'attachment'=>'b.pdf','delivery'=>'sent']);
+
+$n1 = $IL::recordReply('wz-n1', $needorg, 'Bot', $iso(-10));
+check('note matched the oldest pending', $n1['status'], 'note');
+$rowA = \App\Db::one("SELECT * FROM inbox_events WHERE id=?", [$aId]);
+check('  → row stays pending after a note', $rowA['ocr_status'], 'pending');
+check('  → note text kept', strpos((string)$rowA['ocr_message'], 'Action needed') !== false, true);
+check('  → next attachment untouched', \App\Db::one("SELECT ocr_status FROM inbox_events WHERE id=?", [$bId])['ocr_status'], 'pending');
+
+$c1 = $IL::recordReply('wz-c1', $succ, 'Bot', $iso(-9));
+check('confirmation closes the SAME row', $c1['status'], 'success');
+$rowA = \App\Db::one("SELECT * FROM inbox_events WHERE id=?", [$aId]);
+check('  → a.pdf success', $rowA['ocr_status'], 'success');
+check('  → a.pdf got the bill link', $rowA['bill_url'], 'https://go.xero.com/AccountsPayable/View.aspx?InvoiceID=42774757-6a0c-4639-916a-e1a4428bb003');
+check('  → whole thread kept for hover', strpos((string)$rowA['ocr_message'], 'Action needed') !== false
+                                       && strpos((string)$rowA['ocr_message'], 'draft bill created') !== false, true);
+check('  → b.pdf still waiting', \App\Db::one("SELECT ocr_status FROM inbox_events WHERE id=?", [$bId])['ocr_status'], 'pending');
+
+// A delivery older than the match window can no longer absorb a reply — that is
+// what let one unanswered attachment shift every later result onto the wrong row.
+$oldId = $IL::recordDelivery(['event_at'=>$iso(-60 * (\App\Service\Inbox\InboxLog::MATCH_WINDOW_HOURS + 2)),'attachment'=>'stale.pdf','delivery'=>'sent']);
+\App\Db::q("UPDATE inbox_events SET ocr_status='success' WHERE id=?", [$bId]);   // only the stale row is pending
+$r4 = $IL::recordReply('wz-4', $succ, 'Bot', $iso(-1));
+check('stale pending ignored → reply dropped', $r4['matched'], false);
+check('  → stale row untouched', \App\Db::one("SELECT ocr_status FROM inbox_events WHERE id=?", [$oldId])['ocr_status'], 'pending');
+check('stale pending counts as an error, not as waiting', $IL::stats()['pending'], 0);
+check('  → and shows up in errors', $IL::stats()['errors'] >= 3, true);
+check('isStale: old delivery', $IL::isStale($now->modify('-9 hours')->format('Y-m-d H:i:s')), true);
+check('isStale: recent delivery', $IL::isStale($now->modify('-5 minutes')->format('Y-m-d H:i:s')), false);
 
 echo "\n" . str_repeat('=', 40) . "\n";
 printf("TOTAL: %d passed, %d failed\n", $pass, $fail);

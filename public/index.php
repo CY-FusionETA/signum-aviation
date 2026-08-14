@@ -628,7 +628,13 @@ function render_inbox(): void {
             return $out;
         }
         if ($st === 'failed')  return '<span class="pill red">Failed</span>';
-        if ($st === 'pending') return '<span class="muted small">waiting…</span>';
+        if ($st === 'pending') {
+            // Past the match window the reply is never coming — say so rather than
+            // leaving the row spinning on "waiting…" forever.
+            return InboxLog::isStale((string)($r['event_at'] ?: ($r['ts'] ?? '')))
+                ? '<span class="pill gray" title="No result came back from the processor for this attachment">No reply</span>'
+                : '<span class="muted small">waiting…</span>';
+        }
         return '<span class="muted">—</span>';
     };
     ?>
@@ -639,12 +645,16 @@ function render_inbox(): void {
       <div class="tile"><div class="tnum"><?= $s['pending'] ?></div><div class="tlbl">Awaiting result</div></div>
     </section>
     <div class="card">
+      <div class="chead">
+        <h2>Mailbox activity</h2>
+        <a class="btn ghost sm" href="<?= e(base()) ?>/?view=inbox" title="Reload the log — new sends and processor replies arrive continuously">Refresh</a>
+      </div>
       <p class="muted" style="margin:0 0 12px">
-        Every supplier invoice the mailbox poller sends for processing is logged here — when, who sent it, the attachment, and whether the draft bill was created. Any error reported back appears in the Message column.
+        Every supplier invoice the mailbox poller sends for processing is logged here — when, who sent it, the attachment, and whether the draft bill was created. Any error reported back appears in the Message column — hover it to read the processor's full reply.
         <?= $last !== '' ? ' · <b>Last checked</b> ' . e($last) : '' ?> · times are Malaysia time (UTC+8).
       </p>
       <table class="grid"><thead><tr>
-        <th>When</th><th>Sender</th><th>Attachment</th><th>Delivered</th><th>Bill created?</th><th>Message</th>
+        <th>When</th><th>Sender</th><th>Attachment</th><th>Delivered</th><th>Bill created</th><th>Message</th>
       </tr></thead><tbody>
       <?php if (!$rows): ?>
         <tr><td colspan="6" class="muted">Nothing yet — entries appear here as invoice emails arrive and are sent for processing.</td></tr>
@@ -654,12 +664,16 @@ function render_inbox(): void {
         // Message shows the problem, never the happy path: the send error if the
         // hand-off failed, else the processor's reply only when the bill failed.
         // A successful create leaves it blank; "already exists" gets a short note.
-        $st  = (string)($r['ocr_status'] ?? '');
-        $msg = '';
-        if (trim((string)($r['delivery_error'] ?? '')) !== '')      $msg = trim((string)$r['delivery_error']);
-        elseif ($st === 'failed')                                   $msg = trim((string)($r['ocr_message'] ?? ''));
+        // Where there IS a message, hovering shows the processor's reply in full.
+        $st    = (string)($r['ocr_status'] ?? '');
+        $err   = trim((string)($r['delivery_error'] ?? ''));
+        $reply = trim((string)($r['ocr_message'] ?? ''));
+        $msg   = '';
+        if ($err !== '')                $msg = $err;
+        elseif ($st === 'failed')       $msg = $reply;
         elseif ($st === 'success' && trim((string)($r['bill_url'] ?? '')) === ''
-                && stripos((string)($r['ocr_message'] ?? ''), 'already exists') !== false) $msg = 'Already in Xero — no action needed';
+                && stripos($reply, 'already exists') !== false) $msg = 'Already in Xero — no action needed';
+        $tip = $err !== '' && $reply !== '' ? $err . "\n\n" . $reply : ($err !== '' ? $err : $reply);
       ?>
         <tr>
           <td class="nowrap mono"><?= e($when ?: '—') ?><div class="muted small"><?= e($tm) ?></div></td>
@@ -667,7 +681,7 @@ function render_inbox(): void {
           <td><?php if (($r['attachment'] ?? '') !== ''): ?><span class="mono" style="font-size:12px"><?= e((string)$r['attachment']) ?></span><?php else: ?><span class="muted">—</span><?php endif; ?></td>
           <td><?= $dpill((string)($r['delivery'] ?? '')) ?></td>
           <td><?= $ocell($r) ?></td>
-          <td><?php if ($msg !== ''): ?><span class="billdesc" style="max-width:340px" title="<?= e($msg) ?>"><?= e(mb_strimwidth($msg, 0, 80, '…')) ?></span><?php else: ?><span class="muted">—</span><?php endif; ?></td>
+          <td><?php if ($msg !== ''): ?><span class="billdesc" style="max-width:340px" title="<?= e($tip !== '' ? $tip : $msg) ?>"><?= e(mb_strimwidth($msg, 0, 80, '…')) ?></span><?php else: ?><span class="muted">—</span><?php endif; ?></td>
         </tr>
       <?php endforeach; endif; ?>
       </tbody></table>
