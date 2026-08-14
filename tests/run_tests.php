@@ -607,6 +607,52 @@ check('  → row marked failed', $rowD['ocr_status'], 'failed');
 check('  → WhatsApp wording kept', strpos((string)$rowD['ocr_message'], 'is already in Xero') !== false, true);
 check('  → no bill link claimed', $rowD['bill_url'], '');
 
+// --- 18. Inbox: plain-English messages + clearing a duplicate --------
+// The processor's WhatsApp blocks are long; the Message column must say what
+// happened in one sentence an operator can act on.
+$DB = '\App\Service\Inbox\DuplicateBill';
+check('isDuplicate: already exists', $IL::isDuplicate($exists), true);
+check('isDuplicate: plain failure', $IL::isDuplicate($failmsg), false);
+
+check('plain: duplicate names the bill', $IL::plainMessage($rowD),
+      'Already in Xero — bill Demo12345-SN030473 exists, so no new bill was made.');
+check('plain: created bill says nothing', $IL::plainMessage($rowA), '');
+check('plain: pending says nothing', $IL::plainMessage(['ocr_status'=>'pending','ocr_message'=>$analysis]), '');
+check('plain: send error passed through', $IL::plainMessage(\App\Db::one("SELECT * FROM inbox_events WHERE id=?", [$idF])),
+      'File-drop HTTP 500');
+check('plain: other failure → processor headline',
+      $IL::plainMessage(['ocr_status'=>'failed','ocr_message'=>$failmsg]),
+      'Could not create the bill — missing account code');
+check('plain: unreadable file → fixed wording',
+      $IL::plainMessage(['ocr_status'=>'failed','ocr_message'=>"❌ *Unsupported file* — could not read it"]),
+      'The invoice could not be read — send a clearer PDF or photo.');
+
+// The button only shows on an uncleared duplicate that names its bill.
+check('offer: duplicate row', $DB::offerFor($rowD), true);
+check('offer: duplicate bill number', $DB::numberFor($rowD), 'Demo12345-SN030473');
+check('offer: not on a plain failure', $DB::offerFor(\App\Db::one("SELECT * FROM inbox_events WHERE id=?", [$id2])), false);
+check('offer: not on a created bill', $DB::offerFor($rowA), false);
+
+// Xero is not connected in the suite, so the delete fails cleanly and the row is
+// left untouched — the button must stay available for a real attempt.
+$att = $DB::remove((int)$rowD['id'], 'tester@example.com');
+check('remove without Xero fails cleanly', $att['ok'], false);
+check('  → says which bill it could not look up', strpos($att['message'], 'Demo12345-SN030473') !== false, true);
+check('  → row not stamped', $DB::offerFor(\App\Db::one("SELECT * FROM inbox_events WHERE id=?", [$rowD['id']])), true);
+check('remove on an unknown row', $DB::remove(999999)['ok'], false);
+
+// Once cleared, the button is gone and the row says what was done.
+\App\Db::q("UPDATE inbox_events SET dup_action=? WHERE id=?", ['Deleted bill Demo12345-SN030473 in Xero', $rowD['id']]);
+$rowD2 = \App\Db::one("SELECT * FROM inbox_events WHERE id=?", [$rowD['id']]);
+check('cleared duplicate stops offering', $DB::offerFor($rowD2), false);
+check('  → keeps the note', $DB::clearedNote($rowD2), 'Deleted bill Demo12345-SN030473 in Xero');
+check('  → refuses a second delete', $DB::remove((int)$rowD2['id'])['ok'], false);
+
+// Stub client shapes (Xero disconnected) — never throws, always explains.
+$stub = new \App\Service\Xero\XeroStubClient();
+check('stub findBillByNumber not found', $stub->findBillByNumber('SN1')['found'], false);
+check('stub deleteDraftBill fails', $stub->deleteDraftBill('x')['ok'], false);
+
 echo "\n" . str_repeat('=', 40) . "\n";
 printf("TOTAL: %d passed, %d failed\n", $pass, $fail);
 exit($fail === 0 ? 0 : 1);

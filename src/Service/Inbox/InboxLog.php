@@ -159,8 +159,8 @@ final class InboxLog
         if ($t === '') return 'ignore';
 
         // A duplicate the processor refused to re-create: nothing came of this send,
-        // so it is a failure and the processor's wording is shown in the Message column.
-        if (strpos($t, 'already exists') !== false) return 'failed';
+        // so it is a failure and the Inbox offers to clear the bill already in Xero.
+        if (self::isDuplicate($text)) return 'failed';
 
         if (strpos($t, 'draft bill created') !== false || strpos($text, '✅') !== false) {
             return 'success';
@@ -177,6 +177,69 @@ final class InboxLog
             return 'note';
         }
         return 'ignore';
+    }
+
+    /**
+     * True when the processor refused to create the bill because that invoice
+     * number is already on a bill in Xero ("⚠️ Already exists in Xero"). This is
+     * the one failure an operator can clear from the Inbox — see DuplicateBill.
+     */
+    public static function isDuplicate(string $text): bool
+    {
+        $t = mb_strtolower($text);
+        return strpos($t, 'already exists') !== false || strpos($t, 'already in xero') !== false;
+    }
+
+    /**
+     * The Message column in short, plain English. The processor answers in long
+     * WhatsApp blocks ("⚠️ *Already exists in Xero* … no action needed"); the table
+     * shows one sentence saying what happened and what to do, and keeps the whole
+     * reply on hover. '' when nothing went wrong (a created bill says nothing).
+     */
+    public static function plainMessage(array $row): string
+    {
+        $err = trim((string)($row['delivery_error'] ?? ''));
+        if ($err !== '') return $err;                       // our own send errors are already short
+        if ((string)($row['ocr_status'] ?? '') !== 'failed') return '';
+
+        $reply = trim((string)($row['ocr_message'] ?? ''));
+        if ($reply === '') return 'The bill was not created.';
+
+        if (self::isDuplicate($reply)) {
+            $num = trim((string)($row['bill_number'] ?? '')) ?: self::extractBillNumber($reply);
+            return $num !== ''
+                ? "Already in Xero — bill {$num} exists, so no new bill was made."
+                : 'Already in Xero — this invoice is on a bill already, so no new bill was made.';
+        }
+
+        $t = mb_strtolower($reply);
+        // The handful of processor failures with a fixed shape get fixed wording;
+        // anything else falls back to the processor's own headline.
+        if (strpos($t, 'organisation') !== false || strpos($t, 'organization') !== false) {
+            return 'Xero could not tell which company this bill is for.';
+        }
+        if (strpos($t, 'unsupported') !== false || strpos($t, 'could not read') !== false
+            || strpos($t, "couldn't read") !== false || strpos($t, 'unreadable') !== false) {
+            return 'The invoice could not be read — send a clearer PDF or photo.';
+        }
+        return self::headline($reply);
+    }
+
+    /**
+     * The processor's own one-line summary of a failure: the ⚠️/❌ marker line
+     * (its heading, e.g. "Could not create the bill — missing account code"),
+     * stripped of WhatsApp bold/underscore markup.
+     */
+    private static function headline(string $reply): string
+    {
+        $tail = preg_match('/(?:⚠️|⚠|❌)[\s\S]*$/u', $reply, $m) ? $m[0] : $reply;
+        $tail = trim(str_replace(['⚠️', '⚠', '❌', '*', '_'], '', $tail));
+        $line = '';
+        foreach (explode("\n", $tail) as $l) {
+            $l = trim(preg_replace('/\s+/u', ' ', $l));
+            if ($l !== '') { $line = $l; break; }
+        }
+        return mb_strimwidth($line !== '' ? $line : 'The bill was not created.', 0, 90, '…');
     }
 
     /** First Xero URL in a processor result (the "View: …" link), or ''. */

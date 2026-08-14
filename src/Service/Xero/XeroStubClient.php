@@ -34,6 +34,20 @@ final class XeroStubClient implements XeroClientInterface
         return '';
     }
 
+    public function findBillByNumber(string $invoiceNumber): array
+    {
+        return [
+            'ok' => false, 'found' => false, 'invoice_id' => '', 'invoice_number' => $invoiceNumber,
+            'status' => '', 'supplier' => '', 'total' => null, 'currency' => '',
+            'error' => 'Xero is not connected.',
+        ];
+    }
+
+    public function deleteDraftBill(string $invoiceId): array
+    {
+        return ['ok' => false, 'status' => '', 'stubbed' => true, 'error' => 'Xero is not connected.'];
+    }
+
     public function createSalesInvoice(string $clientName, string $currency, string $reference, array $lines): array
     {
         return ['ok' => false, 'invoice_id' => null, 'invoice_number' => null, 'stubbed' => true, 'error' => 'Xero is not connected.'];

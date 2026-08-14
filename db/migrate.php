@@ -29,6 +29,7 @@ $add = [
     'inbox_events' => [
         'bill_url'    => 'TEXT',
         'bill_number' => 'TEXT',
+        'dup_action'  => 'TEXT',
     ],
 ];
 foreach ($add as $table => $cols) {

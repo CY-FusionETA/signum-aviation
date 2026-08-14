@@ -339,6 +339,94 @@ final class XeroApiClient implements XeroClientInterface
         }
     }
 
+    /**
+     * Find a live supplier bill by invoice number. VOIDED/DELETED bills keep the
+     * number in Xero's index but no longer reserve it, so they are skipped: found
+     * = false means a new bill can carry that number again.
+     */
+    public function findBillByNumber(string $invoiceNumber): array
+    {
+        $invoiceNumber = trim($invoiceNumber);
+        $none = [
+            'ok' => false, 'found' => false, 'invoice_id' => '', 'invoice_number' => $invoiceNumber,
+            'status' => '', 'supplier' => '', 'total' => null, 'currency' => '',
+        ];
+        if ($invoiceNumber === '') return $none + ['error' => 'No invoice number to look up.'];
+
+        try {
+            $auth = XeroOAuth::accessToken();
+            if (!$auth) return $none + ['error' => 'Xero is not connected.'];
+
+            $where = rawurlencode('Type=="ACCPAY" AND InvoiceNumber=="' . str_replace('"', '\"', $invoiceNumber) . '"');
+            [$code, $body] = XeroOAuth::http('GET', self::API . 'Invoices?where=' . $where, [
+                'Authorization: Bearer ' . $auth['access_token'],
+                'Xero-tenant-id: ' . $auth['tenant_id'],
+                'Accept: application/json',
+            ]);
+            $json = json_decode($body, true);
+            if ($code < 200 || $code >= 300) return $none + ['error' => self::extractError($json, $body)];
+
+            foreach ($json['Invoices'] ?? [] as $inv) {
+                $status = strtoupper((string)($inv['Status'] ?? ''));
+                if ($status === 'VOIDED' || $status === 'DELETED') continue;
+                return [
+                    'ok'             => true,
+                    'found'          => true,
+                    'invoice_id'     => (string)($inv['InvoiceID'] ?? ''),
+                    'invoice_number' => (string)($inv['InvoiceNumber'] ?? $invoiceNumber),
+                    'status'         => $status,
+                    'supplier'       => (string)($inv['Contact']['Name'] ?? ''),
+                    'total'          => isset($inv['Total']) ? (float)$inv['Total'] : null,
+                    'currency'       => (string)($inv['CurrencyCode'] ?? ''),
+                ];
+            }
+            return ['ok' => true] + $none;   // looked up fine, nothing live under that number
+        } catch (\Throwable $e) {
+            return $none + ['error' => $e->getMessage()];
+        }
+    }
+
+    /**
+     * Delete a leftover supplier bill (DRAFT/SUBMITTED → DELETED), freeing its
+     * invoice number so the invoice can be emailed in again. Xero only accepts
+     * DELETED for those two statuses; an approved or paid bill is refused here
+     * with wording the operator can act on rather than a raw Xero validation error.
+     */
+    public function deleteDraftBill(string $invoiceId): array
+    {
+        try {
+            $auth = XeroOAuth::accessToken();
+            if (!$auth) return ['ok' => false, 'status' => '', 'stubbed' => false, 'error' => 'Xero is not connected.'];
+
+            $status = $this->invoiceStatus($invoiceId);
+            if ($status === '') {
+                return ['ok' => false, 'status' => '', 'stubbed' => false, 'error' => 'That bill could not be read in Xero.'];
+            }
+            if ($status === 'DELETED' || $status === 'VOIDED') {
+                return ['ok' => true, 'status' => $status, 'stubbed' => false];   // already gone
+            }
+            if ($status !== 'DRAFT' && $status !== 'SUBMITTED') {
+                return ['ok' => false, 'status' => $status, 'stubbed' => false,
+                        'error' => 'that bill is ' . strtolower($status) . ' in Xero, not a draft — open it in Xero and check it before removing it.'];
+            }
+
+            [$code, $body] = XeroOAuth::http('POST', self::API . 'Invoices', [
+                'Authorization: Bearer ' . $auth['access_token'],
+                'Xero-tenant-id: ' . $auth['tenant_id'],
+                'Accept: application/json',
+                'Content-Type: application/json',
+            ], json_encode(['Invoices' => [['InvoiceID' => $invoiceId, 'Status' => 'DELETED']]], JSON_UNESCAPED_UNICODE));
+
+            $json = json_decode($body, true);
+            $now  = strtoupper((string)($json['Invoices'][0]['Status'] ?? ''));
+            return ($code >= 200 && $code < 300 && $now === 'DELETED')
+                ? ['ok' => true, 'status' => 'DELETED', 'stubbed' => false]
+                : ['ok' => false, 'status' => $now, 'stubbed' => false, 'error' => self::extractError($json, $body)];
+        } catch (\Throwable $e) {
+            return ['ok' => false, 'status' => '', 'stubbed' => false, 'error' => $e->getMessage()];
+        }
+    }
+
     // --- Module 5: raise a client sales invoice (ACCREC) -------------
 
     /**

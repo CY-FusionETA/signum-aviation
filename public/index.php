@@ -20,6 +20,7 @@ use App\Service\Invoices\InvoiceService;
 use App\Service\Invoices\CompletenessChecker;
 use App\Service\Xero\XeroOAuth;
 use App\Service\Inbox\InboxLog;
+use App\Service\Inbox\DuplicateBill;
 
 session_start();
 
@@ -376,6 +377,16 @@ if ($path === '/bills/tag-all' && $method === 'POST') {
     redirect('/?view=bills');
 }
 
+// --- Inbox: clear the bill an "already in Xero" send collided with ---
+// Deletes the leftover draft in Xero and tells the operator to email the
+// supplier invoice in again — that resend is what actually creates the bill.
+if ($path === '/inbox/duplicate/delete' && $method === 'POST') {
+    csrf_check();
+    $res = DuplicateBill::remove((int)($_POST['id'] ?? 0), current_email());
+    $_SESSION[!empty($res['ok']) ? 'flash_ok' : 'flash_err'] = $res['message'];
+    redirect('/?view=inbox');
+}
+
 // --- Module 5: raise a client sales invoice for a trip --------------
 if ($path === '/invoices/create' && $method === 'POST') {
     csrf_check();
@@ -650,7 +661,7 @@ function render_inbox(): void {
         <a class="btn ghost sm" href="<?= e(base()) ?>/?view=inbox" title="Reload the log — new sends and processor replies arrive continuously">Refresh</a>
       </div>
       <p class="muted" style="margin:0 0 12px">
-        Every supplier invoice the mailbox poller sends for processing is logged here — when, who sent it, the attachment, and whether the draft bill was created. Any error reported back appears in the Message column — hover it to read the processor's full reply.
+        Every supplier invoice the mailbox poller sends for processing is logged here — when, who sent it, the attachment, and whether the draft bill was created. Any error reported back appears in the Message column in plain English — hover it to read the processor's full reply. Where the invoice number was already in Xero, <b>Delete duplicate in Xero</b> removes the draft sitting there so you can email the invoice in again.
         <?= $last !== '' ? ' · <b>Last checked</b> ' . e($last) : '' ?> · times are Malaysia time (UTC+8).
       </p>
       <table class="grid"><thead><tr>
@@ -661,22 +672,19 @@ function render_inbox(): void {
       <?php else: foreach ($rows as $r):
         $when = local_dt($r['event_at'] ?: ($r['ts'] ?? ''), 'd M Y');
         $tm   = local_dt($r['event_at'] ?: ($r['ts'] ?? ''), 'H:i');
-        // Message shows the problem, never the happy path: the send error if the
-        // hand-off failed, else the processor's reply whenever the bill failed —
-        // including "already exists in Xero". A successful create leaves it blank.
-        // Where there IS a message, hovering shows the processor's reply in full.
-        $st    = (string)($r['ocr_status'] ?? '');
+        // Message shows the problem, never the happy path: one plain-English line
+        // saying what went wrong (the processor answers in long WhatsApp blocks),
+        // with its whole reply on hover. A successful create leaves it blank.
         $err   = trim((string)($r['delivery_error'] ?? ''));
         $reply = trim((string)($r['ocr_message'] ?? ''));
-        $msg   = '';
-        if ($err !== '')          $msg = $err;
-        elseif ($st === 'failed') {
-            // Lead with what went wrong (from the ⚠️/❌ marker on), not the analysis
-            // header the thread opens with. The tooltip still has the whole reply.
-            $msg = preg_match('/(?:⚠️|⚠|❌)[\s\S]*$/u', $reply, $m) ? $m[0] : $reply;
-            $msg = trim(preg_replace('/\s+/u', ' ', str_replace(['*', '_'], '', $msg)));
-        }
-        $tip = $err !== '' && $reply !== '' ? $err . "\n\n" . $reply : ($err !== '' ? $err : $reply);
+        $msg   = InboxLog::plainMessage($r);
+        $tip   = $err !== '' && $reply !== '' ? $err . "\n\n" . $reply : ($err !== '' ? $err : $reply);
+        // A duplicate is the one failure fixable from here: delete the bill already
+        // in Xero, then email the invoice in again.
+        $dupNum  = DuplicateBill::offerFor($r) ? DuplicateBill::numberFor($r) : '';
+        $dupDone = DuplicateBill::clearedNote($r);
+        $dupConf = "Delete bill {$dupNum} in Xero?\\n\\nThis removes the draft bill already there. "
+                 . "No new bill is made — email the supplier invoice in again afterwards and it will be created fresh.";
       ?>
         <tr>
           <td class="nowrap mono"><?= e($when ?: '—') ?><div class="muted small"><?= e($tm) ?></div></td>
@@ -684,7 +692,17 @@ function render_inbox(): void {
           <td><?php if (($r['attachment'] ?? '') !== ''): ?><span class="mono" style="font-size:12px"><?= e((string)$r['attachment']) ?></span><?php else: ?><span class="muted">—</span><?php endif; ?></td>
           <td><?= $dpill((string)($r['delivery'] ?? '')) ?></td>
           <td><?= $ocell($r) ?></td>
-          <td><?php if ($msg !== ''): ?><span class="billdesc" style="max-width:340px" title="<?= e($tip !== '' ? $tip : $msg) ?>"><?= e(mb_strimwidth($msg, 0, 80, '…')) ?></span><?php else: ?><span class="muted">—</span><?php endif; ?></td>
+          <td>
+            <?php if ($msg !== ''): ?><span class="billdesc" style="max-width:340px" title="<?= e($tip !== '' ? $tip : $msg) ?>"><?= e(mb_strimwidth($msg, 0, 90, '…')) ?></span><?php else: ?><span class="muted">—</span><?php endif; ?>
+            <?php if ($dupNum !== ''): ?>
+              <form method="post" action="<?= e(base()) ?>/inbox/duplicate/delete" style="margin-top:6px" onsubmit="return confirm('<?= e($dupConf) ?>')">
+                <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>"><input type="hidden" name="id" value="<?= (int)$r['id'] ?>">
+                <button class="btn danger sm" title="Deletes the draft bill sitting in Xero under <?= e($dupNum) ?>, so the invoice can be emailed in again">Delete duplicate in Xero</button>
+              </form>
+            <?php elseif ($dupDone !== ''): ?>
+              <div class="muted small" style="margin-top:4px" title="<?= e($dupDone) ?>">Duplicate cleared — email the supplier invoice in again.</div>
+            <?php endif; ?>
+          </td>
         </tr>
       <?php endforeach; endif; ?>
       </tbody></table>

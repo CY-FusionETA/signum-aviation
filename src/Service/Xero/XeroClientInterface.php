@@ -29,6 +29,22 @@ interface XeroClientInterface
     public function invoiceStatus(string $invoiceId): string;
 
     /**
+     * Find a live supplier bill (ACCPAY) by its invoice number — used to clear the
+     * bill a duplicate send collided with. VOIDED/DELETED bills no longer hold the
+     * number and are skipped, so found=false means the number is free.
+     * @return array{ok:bool, found:bool, invoice_id:string, invoice_number:string, status:string, supplier:string, total:?float, currency:string, error?:string}
+     */
+    public function findBillByNumber(string $invoiceNumber): array;
+
+    /**
+     * Delete a supplier bill in Xero (DRAFT/SUBMITTED → DELETED). An approved,
+     * paid or otherwise live bill is refused — only an unfinished one is leftover.
+     * Already deleted/voided counts as done.
+     * @return array{ok:bool, status:string, stubbed:bool, error?:string}
+     */
+    public function deleteDraftBill(string $invoiceId): array;
+
+    /**
      * The bill's Xero History in one call: its creation timestamp (UTC
      * "yyyy-mm-dd hh:mm:ss") and its latest manual note ("Add Note"). Either is ''
      * if unknown. The Invoices payload carries no created date (only
