@@ -11,13 +11,14 @@ use App\Settings;
  * public drop URL to the processor's number, and the processor answers on the
  * same line, which lands back in the Inbox through /wazzup/webhook.
  *
- * Unidash only ever sends inside a conversation the poller already opened minutes
- * earlier (it re-sends an invoice the processor has just replied about), so the
- * WABA free service window is open and no opener message is needed here.
- *
  * Credentials come from config.php ('wazzup' block) and can be overridden at
- * runtime in app_settings. Unset = no automatic re-sending, which is reported
- * rather than silently skipped.
+ * runtime in app_settings. They must name the SAME channel the Gmail script sends
+ * from (Code.gs CHANNEL_ID / CHANNEL_API_KEY): the processor only accepts invoices
+ * from numbers on its allow-list, so a re-send from any other line is ignored.
+ * It is a regular WhatsApp channel, not WhatsApp Business API, so there is no
+ * 24-hour service window to keep open and no opener message to send. Unset
+ * credentials = no automatic re-sending, which is reported rather than silently
+ * skipped.
  */
 final class Wazzup
 {

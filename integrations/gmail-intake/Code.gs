@@ -1,23 +1,29 @@
 /**
  * Skyledger — Module 1: Gmail supplier-invoice intake → WazzOCR (Google Apps Script)
  * ---------------------------------------------------------------------------
- * Runs on a time trigger, finds supplier-invoice emails, and delivers each PDF/
- * image to WazzOCR over WhatsApp via a WABA relay. WazzOCR OCRs it, creates the
- * draft Xero bill, and replies in WhatsApp on the WABA line.
+ * Runs on a time trigger, finds supplier-invoice emails, and sends each PDF/
+ * image straight to WazzOCR over WhatsApp from a regular Wazzup channel. WazzOCR
+ * OCRs it, creates the draft Xero bill, and replies in WhatsApp.
  *
  * THE FLOW (per attachment):
  *   1. Upload the attachment to Unidash's file-drop (<DROP_URL>) → short-lived
  *      public URL (Wazzup can only send files by URL, not by upload).
- *   2. Ensure WABA's FREE service window is open: if it's been more than
- *      WINDOW_HOURS since the last opener, WazzOCR's line (WAZZOCR_CHANNEL_ID)
- *      sends one opener text to your WABA number (WABA_NUMBER). If the window is
- *      still open, no opener is sent. This runs ONLY when relaying a real
- *      invoice — nothing is ever sent while the system is idle.
- *   3. Your WABA line (WABA_CHANNEL_ID) sends the file URL to WazzOCR
- *      (WAZZOCR_WHATSAPP). WazzOCR sees an inbound invoice from the WABA number
+ *   2. Your Wazzup channel (CHANNEL_ID) sends the file URL to WazzOCR
+ *      (WAZZOCR_WHATSAPP). WazzOCR sees an inbound invoice from your number
  *      (which must be in WazzOCR's Allowed phone numbers), OCRs it, creates the
- *      draft Xero bill, and replies on the WABA line.
+ *      draft Xero bill, and replies on the same line.
  *   Unidash then matches/tags/approves the bill → client invoice.
+ *
+ * This is a regular WhatsApp channel (not WhatsApp Business API), so there is NO
+ * 24-hour service window — the file is sent directly, with no opener message.
+ *
+ * INBOX LOG (Unidash): each send is reported to <INBOX_URL> (who/when/what +
+ * sent|failed + the drop URL), plus a heartbeat every run. WazzOCR's WhatsApp
+ * reply is caught by Unidash's <WEBHOOK_URL> (register it ONCE with setWebhook)
+ * so the bill-created / error result shows in the Inbox tab. The drop URL is what
+ * lets Unidash re-send a file on its own: when WazzOCR answers "already exists in
+ * Xero", Unidash deletes that leftover draft bill and sends the SAME file back
+ * for processing, with no second email from you.
  *
  * DEDUPE IS PER ATTACHMENT (not per thread). Each attachment that's been sent is
  * recorded in Script Properties by (message id + size + name), so:
@@ -28,38 +34,31 @@
  * ONE-TIME after pasting/upgrading this script: run `seedProcessed` once. It
  * records every invoice already in your mailbox as "done" WITHOUT sending, so
  * upgrading doesn't re-send your whole history. (To wipe and re-send, run
- * `resetProcessed`.)
+ * `resetProcessed`.) Also run `setWebhook` once so processor replies reach the Inbox.
  *
  * PREREQUISITES:
- *   - Wazzup: a connected WhatsApp channel; put the API key in WAZZUP_API_KEY.
+ *   - Wazzup: a connected WhatsApp channel; put its channelId in CHANNEL_ID and
+ *     its account key in CHANNEL_API_KEY.
  *   - Unidash config.php: set drop.key to a long random string and put the SAME
- *     value in DROP_KEY below.
- *   - WazzOCR: connected to receive invoices on WAZZOCR_WHATSAPP, with exactly
- *     ONE Xero org connected so it doesn't have to ask which org to bill.
+ *     value in DROP_KEY below. Its 'wazzup' block must name this SAME channel and
+ *     WazzOCR number, or Unidash's own re-sends go out on a line WazzOCR ignores.
+ *   - WazzOCR: connected to receive invoices on WAZZOCR_WHATSAPP, with your
+ *     channel's number in its Allowed phone numbers, and exactly ONE Xero org
+ *     connected so it doesn't have to ask which org to bill.
  *
  * SETUP (Gmail side):
  *   1. Gmail filter → apply label CONFIG.SOURCE_LABEL to supplier-invoice emails.
  *   2. script.google.com → new project bound to that Gmail account → paste this.
  *   3. Fill CONFIG. Run `setup` once (grant perms, create labels), then
- *      `seedProcessed` once, then `installTrigger` once (polls every 5 min).
+ *      `seedProcessed` once, then `installTrigger` once (polls every 1 min).
  *      Use `run` to test by hand.
  */
 
 var CONFIG = {
-  // Wazzup — the invoice reaches WazzOCR via a two-hop relay that keeps it inside
-  // the WABA free service window (no business-initiated charge):
-  //   1) if the window has lapsed, WazzOCR's line messages your WABA number to
-  //      re-open it (only when a real invoice is being sent — never on idle)
-  //   2) your WABA line sends the attachment to WazzOCR (free, inside that window)
-  WAZZUP_API_KEY:     'ef3eddf51f7d431ab2927e0d46a2dbf3',        // account owning the channels below
-  WAZZOCR_CHANNEL_ID: '61e245cf-3c1c-4586-a89b-3c1f75de659a',    // WazzOCR's line — sends the opener
-  WAZZOCR_WHATSAPP:   '60102300975',                            // WazzOCR's WhatsApp intake number
-  WABA_CHANNEL_ID:    'e8b53235-fc0f-414d-b427-411aa982ad3d',   // your WABA line's Wazzup channelId
-  WABA_NUMBER:        '60386817302',                            // your WABA WhatsApp number
-  WABA_API_KEY:       '687372d465f646cda5a46c604b9c4bb3',       // WABA line's own Wazzup account key
-  OPENER_TEXT:        'Signum Aviation Attachment from email',
-  WINDOW_HOURS:       20,                                       // assume the WABA free window stays open this long after an opener
-  OPENER_WAIT_MS:     15000,                                    // pause after an opener so it lands before the file (cold-start only)
+  // Wazzup — a regular WhatsApp channel sends each invoice straight to WazzOCR.
+  CHANNEL_ID:       'd899e4ea-b074-423d-8a47-1254cbcc566b',   // your WhatsApp channel's Wazzup channelId
+  CHANNEL_API_KEY:  'a721bdc56ea842eeb5ff89c9f9989fa0',       // that channel's Wazzup account key
+  WAZZOCR_WHATSAPP: '60386817304',                            // WazzOCR's WhatsApp intake number
 
   // Unidash file-drop — hosts each attachment at a short-lived public URL that
   // Wazzup fetches. DROP_KEY must match drop.key in Unidash's config.php.
@@ -68,12 +67,12 @@ var CONFIG = {
 
   // Unidash Inbox (execution log). INBOX_URL receives one POST per attachment
   // sent (plus a heartbeat each run); WEBHOOK_URL is what we register with Wazzup
-  // (run setWebhook once) so the processor's WhatsApp replies land in the Inbox.
-  // Both authenticate with DROP_KEY. WEBHOOK_API_KEY is the Wazzup account key of
-  // the channel that talks to the processor (the one that receives its replies).
+  // (run setWebhook once) so WazzOCR's WhatsApp replies land in the Inbox. Both
+  // authenticate with DROP_KEY. WEBHOOK_API_KEY is the account key of the channel
+  // that talks to WazzOCR (it receives the replies) — the same CHANNEL_API_KEY.
   INBOX_URL:       'https://signum-aviation.fusioneta.com.my/inbox/log',
   WEBHOOK_URL:     'https://signum-aviation.fusioneta.com.my/wazzup/webhook',
-  WEBHOOK_API_KEY: 'ef3eddf51f7d431ab2927e0d46a2dbf3',   // = WAZZUP_API_KEY by default
+  WEBHOOK_API_KEY: 'a721bdc56ea842eeb5ff89c9f9989fa0',          // = CHANNEL_API_KEY
 
   // Gmail label your filter puts invoices under (create the filter first).
   SOURCE_LABEL:    'supplier-invoices',
@@ -85,6 +84,13 @@ var CONFIG = {
   MAX_THREADS_PER_RUN: 20,
   SCAN_DAYS:   3,             // only scan threads active in the last N days (Gmail quota saver)
 };
+
+/**
+ * Drop URL of the attachment currently being sent, reported to the Inbox with it.
+ * Unidash keeps it on the row so it can send that same file to WazzOCR again by
+ * itself — how a duplicate bill is cleared and recreated without you re-emailing.
+ */
+var LAST_DROP_URL = '';
 
 /** Entry point for the time trigger. */
 function run() {
@@ -113,8 +119,8 @@ function run() {
         var key = attKey_(msg, att);
         if (props.getProperty(key)) return;            // this exact attachment already sent
         try {
-          LAST_DROP_URL = '';
-          sendViaWazzup_(att, msg);
+          LAST_DROP_URL = '';                          // never report the previous file's URL
+          sendToWazzOCR_(att, msg);
           props.setProperty(key, String(Date.now())); // record only on success
           anyProcessed = true;
           logInbox_(msg, att, 'sent', '');
@@ -140,14 +146,6 @@ function attKey_(msg, att) {
   return 'att_' + msg.getId() + '_' + att.getSize() + '_' + (att.getName() || '');
 }
 
-/**
- * The drop URL of the attachment currently being relayed. Unidash stores it with
- * the Inbox row so it can send the SAME file to the processor again by itself —
- * that is how an "already exists in Xero" duplicate is cleared and the bill
- * recreated without this script (or you) sending the invoice a second time.
- */
-var LAST_DROP_URL = '';
-
 /** Should this attachment be forwarded? */
 function isForwardable_(att) {
   if (att.getSize() < CONFIG.MIN_BYTES) return false;
@@ -157,51 +155,24 @@ function isForwardable_(att) {
 }
 
 /**
- * Deliver one attachment to WazzOCR via the WABA relay:
+ * Deliver one attachment to WazzOCR:
  *   1. host the file on Unidash's file-drop (Wazzup can only send files by URL),
- *   2. make sure the WABA free service window is open (send an opener only if it
- *      has lapsed — see ensureWindowOpen_), then
- *   3. the WABA line sends the file to WazzOCR (free, inside that window).
- * WazzOCR then sees a real inbound invoice from the (allowed) WABA number.
+ *   2. your WhatsApp channel sends the file straight to WazzOCR.
+ * WazzOCR then sees a real inbound invoice from your (allowed) number.
  * Throws on failure so the attachment is retried next run.
  */
-function sendViaWazzup_(att, msg) {
+function sendToWazzOCR_(att, msg) {
   var url = dropFile_(att);   // short-lived public URL Wazzup can fetch
   LAST_DROP_URL = url;        // reported to the Inbox so Unidash can re-send this file
 
-  ensureWindowOpen_();        // opens the WABA window only if it may have closed
-
-  // WABA line → WazzOCR, carrying the attachment (free service message).
-  wazzupSend_('WABA hop (channel ' + CONFIG.WABA_CHANNEL_ID + ')', CONFIG.WABA_API_KEY || CONFIG.WAZZUP_API_KEY, {
-    channelId:  CONFIG.WABA_CHANNEL_ID,
+  wazzupSend_('send (channel ' + CONFIG.CHANNEL_ID + ')', CONFIG.CHANNEL_API_KEY, {
+    channelId:  CONFIG.CHANNEL_ID,
     chatType:   'whatsapp',
     chatId:     CONFIG.WAZZOCR_WHATSAPP,
     contentUri: url,
   });
 
-  Logger.log('Relayed "%s" to WazzOCR via WABA %s (msg %s)', att.getName(), CONFIG.WABA_NUMBER, msg.getId());
-}
-
-/**
- * Ensure the WABA free service window is open before we send a file. Only sends
- * an opener if it's been more than WINDOW_HOURS since the last one (tracked in
- * Script Properties). Called ONLY when there's an attachment to send — never on
- * idle — so no opener ever goes out unless a real invoice is being relayed.
- */
-function ensureWindowOpen_() {
-  var props = PropertiesService.getScriptProperties();
-  var last  = Number(props.getProperty('waba_window_at') || 0);
-  if (last && (Date.now() - last) < CONFIG.WINDOW_HOURS * 3600 * 1000) return;   // still open
-
-  // WazzOCR's line → WABA number opens the window (WABA sees a customer message).
-  wazzupSend_('opener hop (channel ' + CONFIG.WAZZOCR_CHANNEL_ID + ')', CONFIG.WAZZUP_API_KEY, {
-    channelId: CONFIG.WAZZOCR_CHANNEL_ID,
-    chatType:  'whatsapp',
-    chatId:    CONFIG.WABA_NUMBER,
-    text:      CONFIG.OPENER_TEXT,
-  });
-  Utilities.sleep(CONFIG.OPENER_WAIT_MS);   // let the opener land before the file goes out
-  props.setProperty('waba_window_at', String(Date.now()));
+  Logger.log('Sent "%s" to WazzOCR %s (msg %s)', att.getName(), CONFIG.WAZZOCR_WHATSAPP, msg.getId());
 }
 
 /** POST one Wazzup /v3/message. Throws on non-2xx, tagged with which hop it was. */
@@ -235,7 +206,8 @@ function dropFile_(att) {
 /**
  * Log one attachment send to Unidash's Inbox (best-effort — a logging failure
  * must never break intake, so this swallows its own errors).
- *   status: 'sent' (handed to the processor) or 'failed' (send threw).
+ *   status: 'sent' (handed to WazzOCR) or 'failed' (send threw).
+ *   drop_url: which hosted copy it was, so Unidash can send it again itself.
  */
 function logInbox_(msg, att, status, error) {
   if (!CONFIG.INBOX_URL) return;
@@ -272,16 +244,17 @@ function pingHeartbeat_() {
 }
 
 /**
- * Run ONCE to point Wazzup's webhook at Unidash so the processor's WhatsApp
- * replies (bill created / error) flow into the Inbox. API-type integrations set
- * their webhook here rather than in the Wazzup UI. Safe to re-run.
+ * Run ONCE to point Wazzup's webhook at Unidash so WazzOCR's WhatsApp replies
+ * (bill created / error) flow into the Inbox. Uses WEBHOOK_API_KEY — the account
+ * of the channel that receives those replies. API-type integrations set their
+ * webhook here rather than in the Wazzup UI. Safe to re-run.
  */
 function setWebhook() {
   var res = UrlFetchApp.fetch('https://api.wazzup24.com/v3/webhooks', {
     method: 'patch',
     contentType: 'application/json',
     muteHttpExceptions: true,
-    headers: { Authorization: 'Bearer ' + (CONFIG.WEBHOOK_API_KEY || CONFIG.WAZZUP_API_KEY) },
+    headers: { Authorization: 'Bearer ' + (CONFIG.WEBHOOK_API_KEY || CONFIG.CHANNEL_API_KEY) },
     payload: JSON.stringify({
       webhooksUri: CONFIG.WEBHOOK_URL + '?key=' + encodeURIComponent(CONFIG.DROP_KEY),
       subscriptions: { messagesAndStatuses: true, contactsAndDealsCreation: false, channelsUpdates: false, templateStatus: false },
