@@ -865,10 +865,15 @@ function render_invoices(bool $connected, string $tenant, string $tenantId): voi
           <th>Trip</th><th>Client</th><th class="num">Bills</th><th>Legs</th><th class="num">Recharge</th><th class="num">Admin</th><th class="num">Total</th><th>Status</th><th></th>
         </tr></thead><tbody>
         <?php foreach ($ready as $r): $t=$r['trip']; $bd=$r['build']; $inv=$r['invoice']; $cp=$r['complete'];
+          // A leg marked "no bill expected" is accounted for just like a billed one —
+          // count both, the same way the Trips tab does, or a fully waived trip reads 0/3.
+          $nwv  = count($cp['waived'] ?? []);
+          $done = count($cp['covered']) + $nwv;
+          $wtip = $nwv ? ' ('.$nwv.' marked no bill expected)' : '';
           $legs = $cp['status']==='complete'
-            ? '<span class="pill green" title="All legs have a bill">'.count($cp['covered']).'/'.(int)$cp['legs'].'</span>'
+            ? '<span class="pill green" title="Every leg is accounted for'.e($wtip).'">'.$done.'/'.(int)$cp['legs'].'</span>'
             : ($cp['status']==='gaps'
-                ? '<span class="pill amber" title="Missing a bill at: '.e(implode(', ', $cp['missing'])).'">'.count($cp['covered']).'/'.(int)$cp['legs'].'</span>'
+                ? '<span class="pill amber" title="Missing a bill at: '.e(implode(', ', $cp['missing'])).e($wtip).'">'.$done.'/'.(int)$cp['legs'].'</span>'
                 : '<span class="muted">—</span>');
         ?>
           <tr>

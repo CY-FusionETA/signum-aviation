@@ -311,6 +311,12 @@ check('waived legs no longer block → complete', $ccw['status'], 'complete');
 check('  → waived legs reported', $ccw['waived'], ['RJTT','RKSI']);
 check('  → nothing missing after waive', $ccw['missing'], []);
 check('  → covered still only the billed leg', $ccw['covered'], ['VHHH']);
+// The Legs pill counts billed + waived, so a fully waived trip reads 3/3, not 0/3.
+check('  → billed + waived accounts for every leg', count($ccw['covered']) + count($ccw['waived']), $ccw['legs']);
+$ccAllW = $CC::check(['route' => 'KATW - LEPA - LEMH - LEPA - KATW', 'waived_legs' => '["LEPA","KATW","LEMH"]'], []);
+check('every leg waived → complete', $ccAllW['status'], 'complete');
+check('  → 3 distinct legs', $ccAllW['legs'], 3);
+check('  → all 3 accounted for', count($ccAllW['covered']) + count($ccAllW['waived']), 3);
 
 // Partial waive: one leg still un-waived and unbilled → still gaps.
 $ccw2 = $CC::check(['route' => 'VHHH - RJTT - RKSI', 'waived_legs' => '["RJTT"]'],
