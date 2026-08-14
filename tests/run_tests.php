@@ -739,6 +739,10 @@ $okRetry = \App\Db::one("SELECT * FROM inbox_events WHERE retry_of = ?", [$okId]
 check('  → re-send is waiting for its result', $okRetry['ocr_status'], 'pending');
 check('  → row is flagged cleared', $DB::wasCleared($reload($okId)), true);
 check('  → message is the short one', $IL::plainMessage($reload($okId)), 'Duplicate invoice detected, auto deleted old copy.');
+// Operators read Malaysia time everywhere in the Inbox; only stored fields are UTC.
+$okNote = (string)$reload($okId)['dup_action'];
+check('  → note is stamped in MYT', substr($okNote, -4), ' MYT');
+check('  → with today\'s local date', strpos($okNote, date('d M Y')) !== false, true);
 check('  → and it drops out of the Errors tile', $IL::stats()['errors'], $errBefore - 1);
 \App\Service\Inbox\Wazzup::$transport = null;
 $GLOBALS['config']['wazzup'] = ['api_key' => '', 'channel_id' => '', 'wazzocr_number' => ''];

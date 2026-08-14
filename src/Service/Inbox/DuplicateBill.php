@@ -170,11 +170,15 @@ final class DuplicateBill
         return ['ok' => true];
     }
 
-    /** Record the outcome on the row and hand it back as the call's result. */
+    /**
+     * Record the outcome on the row and hand it back as the call's result. The
+     * time is the app's own (Malaysia, UTC+8), like every other time in the Inbox —
+     * stored timestamps stay UTC, but nothing an operator reads should be.
+     */
     private static function stamp(int $rowId, bool $ok, string $note): array
     {
         Db::q("UPDATE inbox_events SET dup_action = ?, dup_ok = ? WHERE id = ?",
-              [$note . ' · ' . gmdate('d M Y H:i') . ' UTC', $ok ? 1 : 0, $rowId]);
+              [$note . ' · ' . date('d M Y H:i') . ' MYT', $ok ? 1 : 0, $rowId]);
         return ['ok' => $ok, 'message' => $note];
     }
 }
