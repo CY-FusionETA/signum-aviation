@@ -620,13 +620,28 @@ function render_inbox(): void {
     $dpill = fn(string $d) => $d === 'sent'
         ? '<span class="pill green">Sent</span>'
         : ($d === 'failed' ? '<span class="pill red">Failed</span>' : '<span class="muted">—</span>');
+    // The bill a cleared duplicate ended up producing lives on its re-send row, so
+    // the original can still link to it.
+    $retryBill = [];
+    foreach ($rows as $rr) {
+        $of = (int)($rr['retry_of'] ?? 0);
+        if ($of && (string)($rr['ocr_status'] ?? '') === 'success') {
+            $retryBill[$of] = ['url' => (string)($rr['bill_url'] ?? ''), 'num' => (string)($rr['bill_number'] ?? '')];
+        }
+    }
     // Bill-created cell: Success (+ link to the bill in Xero) / Failed / still waiting.
-    $ocell = function(array $r): string {
+    $ocell = function(array $r) use ($retryBill): string {
         $st = (string)($r['ocr_status'] ?? '');
-        if ($st === 'success') {
-            $out = '<span class="pill green">Success</span>';
-            $url = trim((string)($r['bill_url'] ?? ''));
-            $num = trim((string)($r['bill_number'] ?? ''));
+        // A duplicate the app cleared on its own is a success: the stale copy is
+        // gone and the invoice went back through the processor by itself.
+        $cleared = $st === 'failed' && DuplicateBill::wasCleared($r);
+        if ($st === 'success' || $cleared) {
+            $bill = $cleared ? ($retryBill[(int)$r['id']] ?? ['url' => '', 'num' => '']) : ['url' => (string)($r['bill_url'] ?? ''), 'num' => (string)($r['bill_number'] ?? '')];
+            $out  = '<span class="pill green" title="' . ($cleared
+                ? 'The old copy was deleted in Xero and the invoice sent for processing again, automatically'
+                : 'The processor created the draft bill in Xero') . '">Success</span>';
+            $url = trim($bill['url']);
+            $num = trim($bill['num']);
             if ($url !== '' && preg_match('~^https?://~i', $url)) {
                 $out .= ' <a class="link" href="'.e($url).'" target="_blank" rel="noopener noreferrer" title="Open this bill in Xero">View <span class="extlink">↗</span></a>';
             } elseif ($num !== '') {
@@ -676,8 +691,11 @@ function render_inbox(): void {
         $msg   = InboxLog::plainMessage($r);
         $tip   = $err !== '' && $reply !== '' ? $err . "\n\n" . $reply : ($err !== '' ? $err : $reply);
         // What Unidash did about an "already in Xero" duplicate, in its own words.
+        // Once it is cleared that detail is hover-only — the row reads as a success
+        // and the one-line message is all there is to act on.
         $dupDone = DuplicateBill::note($r);
         $retryOf = (int)($r['retry_of'] ?? 0);
+        if (DuplicateBill::wasCleared($r)) { $tip = $dupDone . ($tip !== '' ? "\n\n" . $tip : ''); $dupDone = ''; }
       ?>
         <tr>
           <td class="nowrap mono"><?= e($when ?: '—') ?><div class="muted small"><?= e($tm) ?></div></td>

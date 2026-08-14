@@ -159,6 +159,7 @@ CREATE TABLE IF NOT EXISTS inbox_events (
   bill_url       TEXT,                             -- Xero bill link from the reply (View: …)
   bill_number    TEXT,                             -- invoice number the reply reports
   dup_action     TEXT,                             -- what was done about an "already in Xero" duplicate
+  dup_ok         INTEGER,                          -- 1 = duplicate cleared + invoice re-sent, 0 = it needs a human
   drop_token     TEXT,                             -- file-drop token, so the same file can be re-sent
   retry_of       INTEGER,                          -- this send is Unidash re-sending row N after clearing a duplicate
   wazzup_message_id TEXT                            -- inbound message id (dedupe)

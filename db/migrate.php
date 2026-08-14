@@ -30,6 +30,7 @@ $add = [
         'bill_url'    => 'TEXT',
         'bill_number' => 'TEXT',
         'dup_action'  => 'TEXT',
+        'dup_ok'      => 'INTEGER',
         'drop_token'  => 'TEXT',
         'retry_of'    => 'INTEGER',
     ],

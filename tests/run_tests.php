@@ -689,6 +689,10 @@ check('  → retry reuses the invoice details', [$retry['attachment'], (int)$ret
 check('  → failed send marked on the retry row', $retry['delivery'], 'failed');
 check('  → and it is not left waiting', $retry['ocr_status'], '');
 check('  → original says what was done', strpos((string)$reload($autoId)['dup_action'], 'Deleted bill Demo12345-SN030473 in Xero') === 0, true);
+// The send failed here, so it is NOT presented as handled: the row stays an
+// error and says what is wrong.
+check('  → half-done is not a success', $DB::wasCleared($reload($autoId)), false);
+check('  → and still explains the problem', strpos($IL::plainMessage($reload($autoId)), 'Already in Xero — bill'), 0);
 check('  → and is not tried twice', $DB::isPending($reload($autoId)), false);
 check('  → repeat call is a no-op', $DB::autoResolve($autoId, $x)['ok'], false);
 check('  → no second delete', $x->deleted, ['inv-1']);
@@ -698,6 +702,7 @@ $authId = $dupRow($token);
 $x2 = $fakeXero(['ok'=>true,'found'=>true,'invoice_id'=>'inv-2','status'=>'AUTHORISED','supplier'=>'S','total'=>1.0,'currency'=>'EUR']);
 $DB::autoResolve($authId, $x2);
 check('authorised duplicate left in Xero', $x2->deleted, []);
+check('  → still an error, not a success', $DB::wasCleared($reload($authId)), false);
 check('  → row explains why', strpos((string)$reload($authId)['dup_action'], 'is authorised in Xero, not a draft') !== false, true);
 check('  → nothing re-sent', (int)\App\Db::scalar("SELECT COUNT(*) FROM inbox_events WHERE retry_of = ?", [$authId]), 0);
 
@@ -716,6 +721,27 @@ $x4 = $fakeXero(['ok'=>true,'found'=>false,'invoice_id'=>'','status'=>'','suppli
 $DB::autoResolve($goneId, $x4);
 check('missing bill → still re-sent', (int)\App\Db::scalar("SELECT COUNT(*) FROM inbox_events WHERE retry_of = ?", [$goneId]), 1);
 check('  → row says it was already gone', strpos((string)$reload($goneId)['dup_action'], 'was already gone from Xero') !== false, true);
+
+// The whole cycle working: old copy deleted, invoice on its way through the
+// processor again — the Inbox shows that as a success, not an error. The relay is
+// stubbed here so the send is exercised without leaving the machine.
+$GLOBALS['config']['wazzup'] = ['api_key' => 'k', 'channel_id' => 'c', 'wazzocr_number' => '600000'];
+$sent = [];
+\App\Service\Inbox\Wazzup::$transport = function (array $payload) use (&$sent) { $sent[] = $payload; return ['ok' => true]; };
+$okId = $dupRow($token);
+$errBefore = $IL::stats()['errors'];
+$x6 = $fakeXero($DRAFT);
+check('full cycle reports success', $DB::autoResolve($okId, $x6)['ok'], true);
+check('  → old copy deleted', $x6->deleted, ['inv-1']);
+check('  → file re-sent to the processor', $sent[0]['contentUri'] ?? '', \App\Service\Inbox\DropStore::url($token));
+check('  → to the processor number', $sent[0]['chatId'] ?? '', '600000');
+$okRetry = \App\Db::one("SELECT * FROM inbox_events WHERE retry_of = ?", [$okId]);
+check('  → re-send is waiting for its result', $okRetry['ocr_status'], 'pending');
+check('  → row is flagged cleared', $DB::wasCleared($reload($okId)), true);
+check('  → message is the short one', $IL::plainMessage($reload($okId)), 'Duplicate invoice detected, auto deleted old copy.');
+check('  → and it drops out of the Errors tile', $IL::stats()['errors'], $errBefore - 1);
+\App\Service\Inbox\Wazzup::$transport = null;
+$GLOBALS['config']['wazzup'] = ['api_key' => '', 'channel_id' => '', 'wazzocr_number' => ''];
 
 // The file has expired out of the drop: say so instead of re-sending nothing.
 $noFileId = $dupRow('');
@@ -740,6 +766,9 @@ check('  → row says it is off', strpos((string)$reload($offId)['dup_action'], 
 Settings::set('inbox.auto_clear_duplicates', '1');
 
 // A reply tells the caller which row to clear — that is what fires the recovery.
+// Clear the decks first: replies go to the OLDEST pending send, and the re-sends
+// above are still waiting for theirs.
+\App\Db::q("UPDATE inbox_events SET ocr_status='success' WHERE ocr_status='pending'");
 $hookId = $IL::recordDelivery(['event_at'=>gmdate('Y-m-d\TH:i:s\Z'),'attachment'=>'hook.pdf','att_size'=>10,'delivery'=>'sent']);
 $hook   = $IL::recordReply('wz-dup-hook', $exists, 'Bot', gmdate('Y-m-d\TH:i:s\Z'));
 check('duplicate reply flags itself', $hook['duplicate'], true);

@@ -232,6 +232,10 @@ final class InboxLog
         if ($reply === '') return 'The bill was not created.';
 
         if (self::isDuplicate($reply)) {
+            // Handled end to end (old copy deleted, invoice re-sent): the operator
+            // only needs to know it happened — the detail is on the row's note.
+            if (DuplicateBill::wasCleared($row)) return DuplicateBill::CLEARED_MESSAGE;
+
             $num = trim((string)($row['bill_number'] ?? '')) ?: self::extractBillNumber($reply);
             return $num !== ''
                 ? "Already in Xero — bill {$num} exists, so no new bill was made."
@@ -309,7 +313,11 @@ final class InboxLog
         return [
             'day'     => (int)Db::scalar("SELECT COUNT(*) FROM inbox_events WHERE source='gmail' AND ts >= datetime('now','-1 day')"),
             'created' => (int)Db::scalar("SELECT COUNT(*) FROM inbox_events WHERE ocr_status='success'"),
-            'errors'  => (int)Db::scalar("SELECT COUNT(*) FROM inbox_events WHERE ocr_status='failed' OR delivery='failed' OR (ocr_status='pending' AND NOT $live)"),
+            // A duplicate the app cleared by itself is not an error: the old copy is
+            // gone and the invoice went back through the processor on its own.
+            'errors'  => (int)Db::scalar("SELECT COUNT(*) FROM inbox_events
+                                           WHERE (ocr_status='failed' AND COALESCE(dup_ok,0) <> 1)
+                                              OR delivery='failed' OR (ocr_status='pending' AND NOT $live)"),
             'pending' => (int)Db::scalar("SELECT COUNT(*) FROM inbox_events WHERE ocr_status='pending' AND $live"),
         ];
     }

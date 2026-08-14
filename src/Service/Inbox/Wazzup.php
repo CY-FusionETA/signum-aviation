@@ -23,6 +23,13 @@ final class Wazzup
 {
     private const ENDPOINT = 'https://api.wazzup24.com/v3/message';
 
+    /**
+     * Test seam: a callable(array $payload): array{ok:bool, error?:string} that
+     * stands in for the relay, so the suite can drive a full send without one
+     * leaving the machine. Never set in production.
+     */
+    public static $transport = null;
+
     public static function apiKey(): string       { return self::setting('wazzup.api_key'); }
     public static function channelId(): string    { return self::setting('wazzup.channel_id'); }
     /** The processor's WhatsApp number (WazzOCR's intake line). */
@@ -57,6 +64,8 @@ final class Wazzup
     /** POST one Wazzup message. Never throws — a relay outage is reported, not fatal. */
     private static function post(array $payload): array
     {
+        if (is_callable(self::$transport)) return (array)(self::$transport)($payload);
+
         $ch = curl_init(self::ENDPOINT);
         curl_setopt_array($ch, [
             CURLOPT_POST           => true,

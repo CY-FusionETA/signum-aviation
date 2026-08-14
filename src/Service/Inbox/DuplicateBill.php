@@ -64,6 +64,20 @@ final class DuplicateBill
     }
 
     /**
+     * True when the duplicate was dealt with end to end — old copy gone from Xero
+     * and the invoice on its way through the processor again. The send itself
+     * failed, but nothing is left for anyone to do, so the Inbox shows the row as
+     * a success rather than an error.
+     */
+    public static function wasCleared(array $row): bool
+    {
+        return (int)($row['dup_ok'] ?? 0) === 1;
+    }
+
+    /** What such a row says in the Message column. */
+    public const CLEARED_MESSAGE = 'Duplicate invoice detected, auto deleted old copy.';
+
+    /**
      * Clear one duplicate and get the invoice processed again. Safe to call on any
      * row: anything that isn't an unhandled duplicate is a no-op. Never throws —
      * it runs off a webhook, and every outcome is written to the row instead.
@@ -159,7 +173,8 @@ final class DuplicateBill
     /** Record the outcome on the row and hand it back as the call's result. */
     private static function stamp(int $rowId, bool $ok, string $note): array
     {
-        Db::q("UPDATE inbox_events SET dup_action = ? WHERE id = ?", [$note . ' · ' . gmdate('d M Y H:i') . ' UTC', $rowId]);
+        Db::q("UPDATE inbox_events SET dup_action = ?, dup_ok = ? WHERE id = ?",
+              [$note . ' · ' . gmdate('d M Y H:i') . ' UTC', $ok ? 1 : 0, $rowId]);
         return ['ok' => $ok, 'message' => $note];
     }
 }
