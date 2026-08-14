@@ -25,6 +25,10 @@ $add = [
     'leon_trips' => [
         'waived_legs' => 'TEXT',
     ],
+    'inbox_events' => [
+        'bill_url'    => 'TEXT',
+        'bill_number' => 'TEXT',
+    ],
 ];
 foreach ($add as $table => $cols) {
     $have = array_column(Db::all("PRAGMA table_info({$table})"), 'name');

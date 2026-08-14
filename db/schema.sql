@@ -155,6 +155,8 @@ CREATE TABLE IF NOT EXISTS inbox_events (
   ocr_status     TEXT,                             -- 'pending' | 'created' | 'error' | 'unknown' | ''
   ocr_message    TEXT,                             -- raw reply text from the processor
   ocr_at         TEXT,                             -- when the reply was captured (UTC)
+  bill_url       TEXT,                             -- Xero bill link from the reply (View: …)
+  bill_number    TEXT,                             -- invoice number the reply reports
   wazzup_message_id TEXT                            -- inbound message id (dedupe)
 );
 CREATE INDEX IF NOT EXISTS idx_inbox_pending ON inbox_events (ocr_status, id);

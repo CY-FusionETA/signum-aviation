@@ -199,12 +199,13 @@ if ($path === '/wazzup/webhook' && $method === 'POST') {
     $data = json_decode((string)file_get_contents('php://input'), true);
     // Wazzup verifies the URL with a {"test":true} POST — it must get HTTP 200.
     if (is_array($data) && !empty($data['test'])) { http_response_code(200); echo 'ok'; exit; }
-    $ocrNum = preg_replace('/\D+/', '', (string)(Settings::get('wazzup.wazzocr_number', '') ?: cfg('wazzup.wazzocr_number', '')));
+    // Capture is content-based: recordReply() only acts on an actual bill result
+    // (created / already-exists / error) and ignores progress pings and chatter,
+    // so it doesn't depend on which number the processor happens to reply from.
     foreach ((array)($data['messages'] ?? []) as $m) {
         if (!is_array($m) || !empty($m['isEcho'])) continue;             // skip our own/outgoing
         if (strtolower((string)($m['status'] ?? '')) !== 'inbound') continue; // received only
         $chatId = preg_replace('/\D+/', '', (string)($m['chatId'] ?? ''));
-        if ($ocrNum !== '' && $chatId !== $ocrNum) continue;            // only the processor's line
         InboxLog::recordReply(
             (string)($m['messageId'] ?? ''),
             (string)($m['text'] ?? ''),
@@ -611,12 +612,24 @@ function render_inbox(): void {
     $last = local_dt(InboxLog::lastRun(), 'd M Y H:i');
     $dpill = fn(string $d) => $d === 'sent'
         ? '<span class="pill green">Sent</span>'
-        : ($d === 'failed' ? '<span class="pill amber">Failed</span>' : '<span class="muted">—</span>');
-    $opill = function(string $st): string {
-        $m = ['created'=>['green','Created'],'error'=>['amber','Error'],'pending'=>['gray','Waiting'],'unknown'=>['blue','Replied']];
-        if (!isset($m[$st])) return '<span class="muted">—</span>';
-        [$cl,$t] = $m[$st];
-        return '<span class="pill '.$cl.'">'.e($t).'</span>';
+        : ($d === 'failed' ? '<span class="pill red">Failed</span>' : '<span class="muted">—</span>');
+    // Bill-created cell: Success (+ link to the bill in Xero) / Failed / still waiting.
+    $ocell = function(array $r): string {
+        $st = (string)($r['ocr_status'] ?? '');
+        if ($st === 'success') {
+            $out = '<span class="pill green">Success</span>';
+            $url = trim((string)($r['bill_url'] ?? ''));
+            $num = trim((string)($r['bill_number'] ?? ''));
+            if ($url !== '' && preg_match('~^https?://~i', $url)) {
+                $out .= ' <a class="link" href="'.e($url).'" target="_blank" rel="noopener noreferrer" title="Open this bill in Xero">View <span class="extlink">↗</span></a>';
+            } elseif ($num !== '') {
+                $out .= ' <span class="muted small mono">'.e($num).'</span>';
+            }
+            return $out;
+        }
+        if ($st === 'failed')  return '<span class="pill red">Failed</span>';
+        if ($st === 'pending') return '<span class="muted small">waiting…</span>';
+        return '<span class="muted">—</span>';
     };
     ?>
     <section class="tiles" style="grid-template-columns:repeat(4,1fr)">
@@ -638,15 +651,22 @@ function render_inbox(): void {
       <?php else: foreach ($rows as $r):
         $when = local_dt($r['event_at'] ?: ($r['ts'] ?? ''), 'd M Y');
         $tm   = local_dt($r['event_at'] ?: ($r['ts'] ?? ''), 'H:i');
-        $msg  = trim((string)($r['delivery_error'] ?: $r['ocr_message']));
+        // Message shows the problem, never the happy path: the send error if the
+        // hand-off failed, else the processor's reply only when the bill failed.
+        // A successful create leaves it blank; "already exists" gets a short note.
+        $st  = (string)($r['ocr_status'] ?? '');
+        $msg = '';
+        if (trim((string)($r['delivery_error'] ?? '')) !== '')      $msg = trim((string)$r['delivery_error']);
+        elseif ($st === 'failed')                                   $msg = trim((string)($r['ocr_message'] ?? ''));
+        elseif ($st === 'success' && trim((string)($r['bill_url'] ?? '')) === ''
+                && stripos((string)($r['ocr_message'] ?? ''), 'already exists') !== false) $msg = 'Already in Xero — no action needed';
       ?>
         <tr>
           <td class="nowrap mono"><?= e($when ?: '—') ?><div class="muted small"><?= e($tm) ?></div></td>
-          <td><?= ($r['sender'] ?? '') !== '' ? e((string)$r['sender']) : '<span class="muted">—</span>' ?>
-            <?php if (($r['source'] ?? '') === 'processor'): ?><div class="muted small">processor reply</div><?php endif; ?></td>
+          <td><?= ($r['sender'] ?? '') !== '' ? e((string)$r['sender']) : '<span class="muted">—</span>' ?></td>
           <td><?php if (($r['attachment'] ?? '') !== ''): ?><span class="mono" style="font-size:12px"><?= e((string)$r['attachment']) ?></span><?php else: ?><span class="muted">—</span><?php endif; ?></td>
           <td><?= $dpill((string)($r['delivery'] ?? '')) ?></td>
-          <td><?= $opill((string)($r['ocr_status'] ?? '')) ?></td>
+          <td><?= $ocell($r) ?></td>
           <td><?php if ($msg !== ''): ?><span class="billdesc" style="max-width:340px" title="<?= e($msg) ?>"><?= e(mb_strimwidth($msg, 0, 80, '…')) ?></span><?php else: ?><span class="muted">—</span><?php endif; ?></td>
         </tr>
       <?php endforeach; endif; ?>

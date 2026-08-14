@@ -464,38 +464,67 @@ check('findByNumber blank → null', TripRepo::findByNumber('  '), null);
 $hist = (new \App\Service\Xero\XeroStubClient())->billHistory('x');
 check('stub billHistory shape', array_keys($hist), ['created','note']);
 
-// --- 16. Inbox: delivery log, reply classification, FIFO match ------
+// --- 16. Inbox: real WazzOCR classifier, link/number extraction ------
 $IL = '\App\Service\Inbox\InboxLog';
-check('classify: created', $IL::classify('Draft bill created in Xero ✅'), 'created');
-check('classify: error wins over bill mention', $IL::classify("Couldn't create the bill — invalid date"), 'error');
-check('classify: emoji error', $IL::classify('❌ processing failed'), 'error');
-check('classify: neutral → unknown', $IL::classify('Received, one moment'), 'unknown');
-check('classify: blank → unknown', $IL::classify('   '), 'unknown');
+$succ = "🤖 *AI bill analysis*\nSupplier: Signature Flight Support Ireland Ltd\nInvoice No: Demo12345-SN030473\n"
+      . "✅ *Xero draft bill created*\nInvoice: Demo12345-SN030473\nStatus: DRAFT\n"
+      . "View: https://go.xero.com/AccountsPayable/View.aspx?InvoiceID=42774757-6a0c-4639-916a-e1a4428bb003";
+$exists   = "🤖 *AI bill analysis*\nInvoice No: Demo12345-SN030473\n⚠️ *Already exists in Xero*\nDemo12345-SN030473 is already in Xero — no action needed.";
+$failmsg  = "🤖 *AI bill analysis*\nSupplier: X\n❌ Could not create the bill — missing account code";
+$progress = "🔍 Reading your image...";
+$opener   = "Signum Aviation Attachment from email";
 
-// A sent delivery starts pending; a reply attaches to it (FIFO) and sets status.
+check('classify: draft bill created → success', $IL::classify($succ), 'success');
+check('classify: already exists → success', $IL::classify($exists), 'success');
+check('classify: analysis + error → failed', $IL::classify($failmsg), 'failed');
+check('classify: explicit failure words → failed', $IL::classify('Sorry, could not create the bill'), 'failed');
+check('classify: progress ping → ignore', $IL::classify($progress), 'ignore');
+check('classify: old opener → ignore', $IL::classify($opener), 'ignore');
+check('classify: blank → ignore', $IL::classify('   '), 'ignore');
+
+check('extract bill url', $IL::extractBillUrl($succ), 'https://go.xero.com/AccountsPayable/View.aspx?InvoiceID=42774757-6a0c-4639-916a-e1a4428bb003');
+check('extract bill number', $IL::extractBillNumber($succ), 'Demo12345-SN030473');
+check('extract url absent → blank', $IL::extractBillUrl($exists), '');
+
+// A sent delivery starts pending; a progress ping must NOT consume it.
 $id1 = $IL::recordDelivery(['event_at'=>'2026-08-13T01:00:00Z','sender'=>'ops@asa.com','attachment'=>'inv1.pdf','delivery'=>'sent']);
 $id2 = $IL::recordDelivery(['event_at'=>'2026-08-13T01:01:00Z','sender'=>'ops@asa.com','attachment'=>'inv2.pdf','delivery'=>'sent']);
-check('delivery stored pending', \App\Db::one("SELECT ocr_status FROM inbox_events WHERE id=?", [$id1])['ocr_status'], 'pending');
-$r1 = $IL::recordReply('wz-1', 'Bill created for ASA', 'Processor', '2026-08-13T01:02:00Z');
-check('reply matched a pending row', $r1['matched'], true);
-check('  → oldest pending got the result', \App\Db::one("SELECT ocr_status FROM inbox_events WHERE id=?", [$id1])['ocr_status'], 'created');
-check('  → newer delivery still pending', \App\Db::one("SELECT ocr_status FROM inbox_events WHERE id=?", [$id2])['ocr_status'], 'pending');
+$pp  = $IL::recordReply('wz-p', $progress, 'Bot', '2026-08-13T01:02:00Z');
+check('progress ping ignored', $pp['status'], 'ignore');
+check('  → oldest still pending after ping', \App\Db::one("SELECT ocr_status FROM inbox_events WHERE id=?", [$id1])['ocr_status'], 'pending');
+
+// Success result attaches to the oldest pending, storing link + number.
+$r1 = $IL::recordReply('wz-1', $succ, 'Bot', '2026-08-13T01:03:00Z');
+check('success matched a pending row', $r1['matched'], true);
+$row1 = \App\Db::one("SELECT * FROM inbox_events WHERE id=?", [$id1]);
+check('  → id1 success', $row1['ocr_status'], 'success');
+check('  → id1 bill_url stored', $row1['bill_url'], 'https://go.xero.com/AccountsPayable/View.aspx?InvoiceID=42774757-6a0c-4639-916a-e1a4428bb003');
+check('  → id1 bill_number stored', $row1['bill_number'], 'Demo12345-SN030473');
+check('  → id2 still pending', \App\Db::one("SELECT ocr_status FROM inbox_events WHERE id=?", [$id2])['ocr_status'], 'pending');
 
 // Duplicate webhook delivery (same message id) is ignored.
-$dup = $IL::recordReply('wz-1', 'Bill created for ASA', 'Processor', '2026-08-13T01:02:00Z');
-check('duplicate reply ignored', $dup['status'], 'duplicate');
+check('duplicate reply ignored', $IL::recordReply('wz-1', $succ, 'Bot', '2026-08-13T01:03:00Z')['status'], 'duplicate');
 
 // A failed send never becomes pending, so it can't absorb a reply.
-$idF = $IL::recordDelivery(['event_at'=>'2026-08-13T01:03:00Z','attachment'=>'bad.pdf','delivery'=>'failed','delivery_error'=>'File-drop HTTP 500']);
+$idF = $IL::recordDelivery(['event_at'=>'2026-08-13T01:04:00Z','attachment'=>'bad.pdf','delivery'=>'failed','delivery_error'=>'File-drop HTTP 500']);
 check('failed send is not pending', \App\Db::one("SELECT ocr_status FROM inbox_events WHERE id=?", [$idF])['ocr_status'], '');
 
-// Consume id2's pending slot, then an extra reply stands alone.
-$IL::recordReply('wz-2', 'created', 'Processor', '2026-08-13T01:04:00Z');
+// A failure result consumes id2's pending slot.
+check('failed result classified', $IL::recordReply('wz-2', $failmsg, 'Bot', '2026-08-13T01:05:00Z')['status'], 'failed');
+check('  → id2 failed', \App\Db::one("SELECT ocr_status FROM inbox_events WHERE id=?", [$id2])['ocr_status'], 'failed');
+
+// Nothing pending now → an extra result is DROPPED, never a standalone row.
 $before = (int)\App\Db::scalar("SELECT COUNT(*) FROM inbox_events");
-$r3 = $IL::recordReply('wz-3', 'Error: unsupported file', 'Processor', '2026-08-13T01:05:00Z');
-check('no pending left → reply stands alone', $r3['matched'], false);
-check('  → standalone row added', (int)\App\Db::scalar("SELECT COUNT(*) FROM inbox_events"), $before + 1);
-check('  → classified as error', $r3['status'], 'error');
+$r3 = $IL::recordReply('wz-3', $exists, 'Bot', '2026-08-13T01:06:00Z');
+check('no pending → result dropped', $r3['matched'], false);
+check('  → no standalone row added', (int)\App\Db::scalar("SELECT COUNT(*) FROM inbox_events"), $before);
+
+// rows() only ever returns invoice-email rows (never processor-only rows).
+check('rows() = the 3 deliveries', count($IL::rows()), 3);
+$ist = $IL::stats();
+check('stats: bills created (success)', $ist['created'], 1);
+check('stats: errors (failed result + failed send)', $ist['errors'], 2);
+check('stats: awaiting result', $ist['pending'], 0);
 
 echo "\n" . str_repeat('=', 40) . "\n";
 printf("TOTAL: %d passed, %d failed\n", $pass, $fail);
