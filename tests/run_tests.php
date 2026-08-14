@@ -477,7 +477,7 @@ $analysis = "🤖 *AI bill analysis*\nSupplier: Signature Flight Support Ireland
 $needorg  = $analysis . "\n\n⚠️ *Action needed: pick the organisation*\nNo matching organisation found.";
 
 check('classify: draft bill created → success', $IL::classify($succ), 'success');
-check('classify: already exists → success', $IL::classify($exists), 'success');
+check('classify: already exists → failed (no bill created)', $IL::classify($exists), 'failed');
 check('classify: analysis + error → failed', $IL::classify($failmsg), 'failed');
 check('classify: analysis only → note', $IL::classify($analysis), 'note');
 check('classify: action needed → note', $IL::classify($needorg), 'note');
@@ -566,6 +566,16 @@ check('stale pending counts as an error, not as waiting', $IL::stats()['pending'
 check('  → and shows up in errors', $IL::stats()['errors'] >= 3, true);
 check('isStale: old delivery', $IL::isStale($now->modify('-9 hours')->format('Y-m-d H:i:s')), true);
 check('isStale: recent delivery', $IL::isStale($now->modify('-5 minutes')->format('Y-m-d H:i:s')), false);
+
+// "Already exists in Xero" made no bill from this send: it closes the row as a
+// failure and keeps the processor's wording for the Message column.
+$dupId = $IL::recordDelivery(['event_at'=>$iso(-3),'attachment'=>'dup.pdf','delivery'=>'sent']);
+$r5    = $IL::recordReply('wz-5', $exists, 'Bot', $iso(-2));
+check('already-exists reply → failed', $r5['status'], 'failed');
+$rowD = \App\Db::one("SELECT * FROM inbox_events WHERE id=?", [$dupId]);
+check('  → row marked failed', $rowD['ocr_status'], 'failed');
+check('  → WhatsApp wording kept', strpos((string)$rowD['ocr_message'], 'is already in Xero') !== false, true);
+check('  → no bill link claimed', $rowD['bill_url'], '');
 
 echo "\n" . str_repeat('=', 40) . "\n";
 printf("TOTAL: %d passed, %d failed\n", $pass, $fail);

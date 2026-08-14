@@ -133,9 +133,9 @@ final class InboxLog
 
     /**
      * Classify a processor WhatsApp message into success | failed | note | ignore.
-     *  - success: the bill was created ("Xero draft bill created" / ✅) or it was
-     *    already in Xero ("Already exists in Xero" — the bill is there either way).
-     *  - failed: an explicit error (❌ / failure wording).
+     *  - success: this send created the bill ("Xero draft bill created" / ✅).
+     *  - failed: an explicit error (❌ / failure wording), or "Already exists in Xero"
+     *    — no bill was created from this send and the operator should see why.
      *  - note: the AI analysis block or an "⚠️ action needed" prompt with no outcome
      *    yet — attached to the waiting row, which stays pending.
      *  - ignore: progress pings ("Reading your image…") and unrelated chatter —
@@ -146,10 +146,11 @@ final class InboxLog
         $t = mb_strtolower(trim($text));
         if ($t === '') return 'ignore';
 
-        // Success first — "already exists" carries a ⚠️ but still means the bill is in Xero.
-        if (strpos($t, 'draft bill created') !== false
-            || strpos($t, 'already exists') !== false
-            || strpos($text, '✅') !== false) {
+        // A duplicate the processor refused to re-create: nothing came of this send,
+        // so it is a failure and the processor's wording is shown in the Message column.
+        if (strpos($t, 'already exists') !== false) return 'failed';
+
+        if (strpos($t, 'draft bill created') !== false || strpos($text, '✅') !== false) {
             return 'success';
         }
         // Explicit failure wording.

@@ -662,17 +662,20 @@ function render_inbox(): void {
         $when = local_dt($r['event_at'] ?: ($r['ts'] ?? ''), 'd M Y');
         $tm   = local_dt($r['event_at'] ?: ($r['ts'] ?? ''), 'H:i');
         // Message shows the problem, never the happy path: the send error if the
-        // hand-off failed, else the processor's reply only when the bill failed.
-        // A successful create leaves it blank; "already exists" gets a short note.
+        // hand-off failed, else the processor's reply whenever the bill failed —
+        // including "already exists in Xero". A successful create leaves it blank.
         // Where there IS a message, hovering shows the processor's reply in full.
         $st    = (string)($r['ocr_status'] ?? '');
         $err   = trim((string)($r['delivery_error'] ?? ''));
         $reply = trim((string)($r['ocr_message'] ?? ''));
         $msg   = '';
-        if ($err !== '')                $msg = $err;
-        elseif ($st === 'failed')       $msg = $reply;
-        elseif ($st === 'success' && trim((string)($r['bill_url'] ?? '')) === ''
-                && stripos($reply, 'already exists') !== false) $msg = 'Already in Xero — no action needed';
+        if ($err !== '')          $msg = $err;
+        elseif ($st === 'failed') {
+            // Lead with what went wrong (from the ⚠️/❌ marker on), not the analysis
+            // header the thread opens with. The tooltip still has the whole reply.
+            $msg = preg_match('/(?:⚠️|⚠|❌)[\s\S]*$/u', $reply, $m) ? $m[0] : $reply;
+            $msg = trim(preg_replace('/\s+/u', ' ', str_replace(['*', '_'], '', $msg)));
+        }
         $tip = $err !== '' && $reply !== '' ? $err . "\n\n" . $reply : ($err !== '' ? $err : $reply);
       ?>
         <tr>
