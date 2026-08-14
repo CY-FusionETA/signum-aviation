@@ -25,17 +25,25 @@ use App\Settings;
  * created" confirmation. Only the second one is a result: a 'note' is appended to
  * the row's message thread and leaves it PENDING, so the confirmation lands on the
  * same row instead of being handed to the next attachment. Matching is also limited
- * to deliveries sent within MATCH_WINDOW_HOURS of the reply — without that, one
- * attachment that never got an answer sits at the head of the queue forever and
- * shifts every later reply onto the wrong row.
+ * to deliveries still inside their window (see the constants below) — without that,
+ * one attachment that never got an answer sits at the head of the queue and hands
+ * every later reply to the wrong row.
  *
  * A per-run heartbeat (Settings 'inbox.last_run') lets the UI show the poller is
  * alive even on idle minutes that send no attachment.
  */
 final class InboxLog
 {
-    /** How long after a delivery a processor reply can still belong to it. */
-    public const MATCH_WINDOW_HOURS = 6;
+    /**
+     * How long a delivery stays matchable. Once the processor has answered it at all
+     * (a note — it is mid-conversation, e.g. waiting for the operator to pick an
+     * organisation) the result can take a while, so it stays open for hours. A
+     * delivery that got NO answer at all is only held briefly: replies normally come
+     * back within seconds, so a silent one is dead and must stop competing, or it
+     * absorbs the next attachment's result and shifts every later row.
+     */
+    public const MATCH_WINDOW_HOURS    = 6;
+    public const SILENT_WINDOW_MINUTES = 10;
 
     /** Record one attachment the poller sent for processing. */
     public static function recordDelivery(array $d): int
@@ -105,30 +113,34 @@ final class InboxLog
         $row = Db::one(
             "SELECT id, ocr_message FROM inbox_events
               WHERE source='gmail' AND ocr_status='pending'
-                AND COALESCE(NULLIF(event_at,''), ts) >= ?
+                AND " . self::SENT_AT . " >= (CASE WHEN COALESCE(ocr_message,'') = '' THEN ? ELSE ? END)
               ORDER BY id ASC LIMIT 1",
-            [self::cutoff($at)]
+            [self::cutoff($at, self::SILENT_WINDOW_MINUTES * 60), self::cutoff($at, self::MATCH_WINDOW_HOURS * 3600)]
         );
         return $row ?: null;
     }
 
+    /** When the poller sent the attachment (event_at, falling back to the row's own ts). */
+    private const SENT_AT = "COALESCE(NULLIF(event_at,''), ts)";
+
     /** Oldest delivery time a reply at $at (UTC, may be '') can still be matched to. */
-    private static function cutoff(string $at): string
+    private static function cutoff(string $at, int $seconds): string
     {
-        $base = $at !== '' ? $at : gmdate('Y-m-d H:i:s');
-        try {
-            return (new \DateTimeImmutable($base, new \DateTimeZone('UTC')))
-                ->modify('-' . self::MATCH_WINDOW_HOURS . ' hours')->format('Y-m-d H:i:s');
-        } catch (\Throwable $e) {
-            return gmdate('Y-m-d H:i:s', time() - self::MATCH_WINDOW_HOURS * 3600);
-        }
+        $base = $at !== '' ? strtotime($at . ' UTC') : time();
+        if ($base === false) $base = time();
+        return gmdate('Y-m-d H:i:s', $base - $seconds);
     }
 
-    /** True when a pending delivery is past the window — its reply is never coming. */
-    public static function isStale(string $eventAt): bool
+    /**
+     * True when a pending delivery is past its window — its result is never coming.
+     * $reply is the row's message so far: an answered-but-unfinished delivery gets
+     * the long window, a silent one only the short one.
+     */
+    public static function isStale(string $eventAt, string $reply = ''): bool
     {
         $t = strtotime(trim($eventAt) . ' UTC');
-        return $t !== false && $t < time() - self::MATCH_WINDOW_HOURS * 3600;
+        $limit = trim($reply) === '' ? self::SILENT_WINDOW_MINUTES * 60 : self::MATCH_WINDOW_HOURS * 3600;
+        return $t !== false && $t < time() - $limit;
     }
 
     /**
@@ -200,9 +212,11 @@ final class InboxLog
 
     public static function stats(): array
     {
-        // A delivery still pending past the match window will never be answered, so it
+        // A delivery still pending past its window will never be answered, so it
         // counts as an error, not as something we are still waiting for.
-        $live = "COALESCE(NULLIF(event_at,''), ts) >= datetime('now','-" . self::MATCH_WINDOW_HOURS . " hours')";
+        $live = self::SENT_AT . " >= (CASE WHEN COALESCE(ocr_message,'') = ''"
+              . " THEN datetime('now','-" . self::SILENT_WINDOW_MINUTES . " minutes')"
+              . " ELSE datetime('now','-" . self::MATCH_WINDOW_HOURS . " hours') END)";
         return [
             'day'     => (int)Db::scalar("SELECT COUNT(*) FROM inbox_events WHERE source='gmail' AND ts >= datetime('now','-1 day')"),
             'created' => (int)Db::scalar("SELECT COUNT(*) FROM inbox_events WHERE ocr_status='success'"),

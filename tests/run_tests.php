@@ -542,17 +542,17 @@ check('stats: awaiting result', $ist['pending'], 0);
 // attachment and every later row is shifted by one (the SN030473 bug).
 $now  = new DateTimeImmutable('now', new DateTimeZone('UTC'));
 $iso  = fn(int $mins) => $now->modify("$mins minutes")->format('Y-m-d\TH:i:s\Z');
-$aId  = $IL::recordDelivery(['event_at'=>$iso(-20),'attachment'=>'a.pdf','delivery'=>'sent']);
-$bId  = $IL::recordDelivery(['event_at'=>$iso(-15),'attachment'=>'b.pdf','delivery'=>'sent']);
+$aId  = $IL::recordDelivery(['event_at'=>$iso(-8),'attachment'=>'a.pdf','delivery'=>'sent']);
+$bId  = $IL::recordDelivery(['event_at'=>$iso(-6),'attachment'=>'b.pdf','delivery'=>'sent']);
 
-$n1 = $IL::recordReply('wz-n1', $needorg, 'Bot', $iso(-10));
+$n1 = $IL::recordReply('wz-n1', $needorg, 'Bot', $iso(-5));
 check('note matched the oldest pending', $n1['status'], 'note');
 $rowA = \App\Db::one("SELECT * FROM inbox_events WHERE id=?", [$aId]);
 check('  → row stays pending after a note', $rowA['ocr_status'], 'pending');
 check('  → note text kept', strpos((string)$rowA['ocr_message'], 'Action needed') !== false, true);
 check('  → next attachment untouched', \App\Db::one("SELECT ocr_status FROM inbox_events WHERE id=?", [$bId])['ocr_status'], 'pending');
 
-$c1 = $IL::recordReply('wz-c1', $succ, 'Bot', $iso(-9));
+$c1 = $IL::recordReply('wz-c1', $succ, 'Bot', $iso(-4));
 check('confirmation closes the SAME row', $c1['status'], 'success');
 $rowA = \App\Db::one("SELECT * FROM inbox_events WHERE id=?", [$aId]);
 check('  → a.pdf success', $rowA['ocr_status'], 'success');
@@ -572,6 +572,19 @@ check('stale pending counts as an error, not as waiting', $IL::stats()['pending'
 check('  → and shows up in errors', $IL::stats()['errors'] >= 3, true);
 check('isStale: old delivery', $IL::isStale($now->modify('-9 hours')->format('Y-m-d H:i:s')), true);
 check('isStale: recent delivery', $IL::isStale($now->modify('-5 minutes')->format('Y-m-d H:i:s')), false);
+// Silent vs answered: a delivery the processor never acknowledged dies in minutes,
+// one it is mid-conversation with keeps the long window.
+check('isStale: silent for 20 min', $IL::isStale($now->modify('-20 minutes')->format('Y-m-d H:i:s')), true);
+check('isStale: answered 20 min ago', $IL::isStale($now->modify('-20 minutes')->format('Y-m-d H:i:s'), 'AI bill analysis…'), false);
+
+// The 11:02/11:16 bug: an earlier send that got NO reply must not absorb the result
+// belonging to the attachment sent moments before the reply arrived.
+$silent = $IL::recordDelivery(['event_at'=>$iso(-25),'attachment'=>'silent.pdf','delivery'=>'sent']);
+$fresh  = $IL::recordDelivery(['event_at'=>$iso(-1),'attachment'=>'fresh.pdf','delivery'=>'sent']);
+$r6 = $IL::recordReply('wz-6', $succ, 'Bot', $now->format('Y-m-d\TH:i:s\Z'));
+check('reply skips the silent delivery', $r6['matched'], true);
+check('  → fresh.pdf got the bill', \App\Db::one("SELECT ocr_status FROM inbox_events WHERE id=?", [$fresh])['ocr_status'], 'success');
+check('  → silent.pdf left alone', \App\Db::one("SELECT ocr_status FROM inbox_events WHERE id=?", [$silent])['ocr_status'], 'pending');
 
 // "Already exists in Xero" made no bill from this send: it closes the row as a
 // failure and keeps the processor's wording for the Message column.

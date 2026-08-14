@@ -631,7 +631,7 @@ function render_inbox(): void {
         if ($st === 'pending') {
             // Past the match window the reply is never coming — say so rather than
             // leaving the row spinning on "waiting…" forever.
-            return InboxLog::isStale((string)($r['event_at'] ?: ($r['ts'] ?? '')))
+            return InboxLog::isStale((string)($r['event_at'] ?: ($r['ts'] ?? '')), (string)($r['ocr_message'] ?? ''))
                 ? '<span class="pill gray" title="No result came back from the processor for this attachment">No reply</span>'
                 : '<span class="muted small">waiting…</span>';
         }
