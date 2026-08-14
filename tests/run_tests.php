@@ -158,6 +158,17 @@ $btag = \App\Repo\BillRepo::upsert('T1', ['invoice_id'=>'inv-1'], $noMatch);
 check('tagged bill survives a no-trip re-match', $btag['match_status'], 'tagged');
 check('  → still in tagged() for invoicing', count(\App\Repo\BillRepo::tagged('T1')), 1);
 
+// Approval hold: while set, a refresh must not mirror Xero's approval onto the bill,
+// so approving it stays a deliberate click here. The flag survives the refresh upsert.
+$bh = \App\Repo\BillRepo::upsert('T1', ['invoice_id'=>'inv-hold','status'=>'AUTHORISED'], $noMatch);
+check('bill starts unheld', (int)$bh['approval_hold'], 0);
+\App\Repo\BillRepo::setApprovalHold((int)$bh['id'], true);
+check('approval hold set', (int)\App\Repo\BillRepo::findById((int)$bh['id'])['approval_hold'], 1);
+$bh2 = \App\Repo\BillRepo::upsert('T1', ['invoice_id'=>'inv-hold','status'=>'AUTHORISED'], $noMatch);
+check('  → survives a refresh upsert', (int)$bh2['approval_hold'], 1);
+\App\Repo\BillRepo::setApprovalHold((int)$bh['id'], false);
+check('  → released again', (int)\App\Repo\BillRepo::findById((int)$bh['id'])['approval_hold'], 0);
+
 // reconcile without a Xero connection fails cleanly
 \App\Service\Xero\XeroOAuth::disconnect();
 $rr = \App\Service\Bills\BillReconciler::refresh();

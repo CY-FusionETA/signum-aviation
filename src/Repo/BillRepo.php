@@ -99,6 +99,17 @@ final class BillRepo
         Db::q("UPDATE xero_bills SET match_status='approved', xero_last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", [$id]);
     }
 
+    /**
+     * Hold (or release) a bill's approval. While held, the Xero refresh stops
+     * mirroring an AUTHORISED/PAID bill onto it, so approving it stays a deliberate
+     * action taken from here — without this, a bill already authorised in Xero is
+     * re-marked approved on every refresh.
+     */
+    public static function setApprovalHold(int $id, bool $on): void
+    {
+        Db::q("UPDATE xero_bills SET approval_hold=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", [$on ? 1 : 0, $id]);
+    }
+
     /** Bills linked to a trip (matched, tagged or approved). */
     public static function forTrip(string $tenantId, int $tripId): array
     {

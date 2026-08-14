@@ -76,7 +76,8 @@ CREATE TABLE IF NOT EXISTS xero_bills (
   ex_airport          TEXT,               -- extracted ICAO
   ex_date             TEXT,               -- extracted service date (ISO)
   ex_tail             TEXT,               -- extracted aircraft tail
-  match_status        TEXT,               -- matched | ambiguous | review | tagged
+  match_status        TEXT,               -- matched | ambiguous | review | tagged | approved
+  approval_hold       INTEGER NOT NULL DEFAULT 0,  -- 1 = never mirror Xero's approval onto this bill
   matched_trip_id     INTEGER,
   matched_trip_number TEXT,
   matched_client      TEXT,

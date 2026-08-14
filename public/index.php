@@ -1051,7 +1051,7 @@ function render_bills(bool $connected, string $tenant, string $tenantId): void {
             <td class="mono" style="font-size:12px"><?= e($ex ?: '—') ?></td>
             <td><?php if ($b['matched_trip_number']): ?><span class="mono"><?= e($b['matched_trip_number']) ?></span> <span class="muted">→ <?= e($b['matched_client'] ?: 'no client') ?></span><?php else: ?><span class="muted">—</span><?php endif; ?></td>
             <td><?= $xpill((string)($b['xero_status'] ?? '')) ?></td>
-            <td><?= $bpill((string)$b['match_status']) ?><?= !empty($b['xero_last_error']) ? ' <span class="warnmark" title="'.e($b['xero_last_error']).'">!</span>' : '' ?></td>
+            <td><?= $bpill((string)$b['match_status']) ?><?= !empty($b['xero_last_error']) ? ' <span class="warnmark" title="'.e($b['xero_last_error']).'">!</span>' : '' ?><?= !empty($b['approval_hold']) ? ' <span class="muted small" title="Approval hold — refreshing will not mark this bill approved from Xero; approve it from the Trips tab">held</span>' : '' ?></td>
             <td><?php $rm = trim((string)($b['remarks'] ?? '')); if ($rm !== ''): ?><span class="billdesc" title="<?= e($rm) ?>"><?= e(mb_strimwidth($rm, 0, 40, '…')) ?></span><?php else: ?><span class="muted">—</span><?php endif; ?></td>
             <td class="nowrap">
               <?php if ($b['match_status']==='approved'): ?>

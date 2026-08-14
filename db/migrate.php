@@ -21,6 +21,7 @@ $add = [
         'xero_created_at' => 'TEXT',
         'xero_status'     => 'TEXT',
         'remarks'         => 'TEXT',
+        'approval_hold'   => 'INTEGER NOT NULL DEFAULT 0',
     ],
     'leon_trips' => [
         'waived_legs' => 'TEXT',

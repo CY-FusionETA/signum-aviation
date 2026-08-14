@@ -76,8 +76,10 @@ final class BillReconciler
             }
 
             // Reflect Xero-side approval: an AUTHORISED/PAID bill linked to a trip
-            // is approved (whether it was approved here or directly in Xero).
+            // is approved (whether it was approved here or directly in Xero) — unless
+            // the bill is on approval hold, i.e. its approval must be done from here.
             if (in_array((string)($bill['status'] ?? ''), ['AUTHORISED', 'PAID'], true)
+                && empty($row['approval_hold'])
                 && $row['matched_trip_id'] !== null && (string)$row['match_status'] !== 'approved') {
                 BillRepo::markApproved((int)$row['id']);
                 $row = BillRepo::findById((int)$row['id']);
