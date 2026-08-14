@@ -113,6 +113,7 @@ function run() {
         var key = attKey_(msg, att);
         if (props.getProperty(key)) return;            // this exact attachment already sent
         try {
+          LAST_DROP_URL = '';
           sendViaWazzup_(att, msg);
           props.setProperty(key, String(Date.now())); // record only on success
           anyProcessed = true;
@@ -139,6 +140,14 @@ function attKey_(msg, att) {
   return 'att_' + msg.getId() + '_' + att.getSize() + '_' + (att.getName() || '');
 }
 
+/**
+ * The drop URL of the attachment currently being relayed. Unidash stores it with
+ * the Inbox row so it can send the SAME file to the processor again by itself —
+ * that is how an "already exists in Xero" duplicate is cleared and the bill
+ * recreated without this script (or you) sending the invoice a second time.
+ */
+var LAST_DROP_URL = '';
+
 /** Should this attachment be forwarded? */
 function isForwardable_(att) {
   if (att.getSize() < CONFIG.MIN_BYTES) return false;
@@ -158,6 +167,7 @@ function isForwardable_(att) {
  */
 function sendViaWazzup_(att, msg) {
   var url = dropFile_(att);   // short-lived public URL Wazzup can fetch
+  LAST_DROP_URL = url;        // reported to the Inbox so Unidash can re-send this file
 
   ensureWindowOpen_();        // opens the WABA window only if it may have closed
 
@@ -242,6 +252,7 @@ function logInbox_(msg, att, status, error) {
         size:       String(att.getSize()),
         status:     status,
         error:      error ? String(error).slice(0, 500) : '',
+        drop_url:   LAST_DROP_URL || '',
       },
     });
   } catch (e) {

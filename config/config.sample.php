@@ -61,4 +61,15 @@ return [
     'drop' => [
         'key' => '',   // e.g. bin2hex(random_bytes(24))
     ],
+
+    // WhatsApp relay. wazzocr_number is the processor's intake line. The api_key /
+    // channel_id are the WABA line's own Wazzup credentials (Code.gs WABA_API_KEY /
+    // WABA_CHANNEL_ID) — Unidash uses them to send an invoice for processing again
+    // by itself after it clears an "already exists in Xero" duplicate bill. Leave
+    // blank and duplicates are only reported, never re-sent.
+    'wazzup' => [
+        'wazzocr_number' => '',
+        'api_key'        => '',
+        'channel_id'     => '',
+    ],
 ];

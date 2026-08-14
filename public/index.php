@@ -20,6 +20,7 @@ use App\Service\Invoices\InvoiceService;
 use App\Service\Invoices\CompletenessChecker;
 use App\Service\Xero\XeroOAuth;
 use App\Service\Inbox\InboxLog;
+use App\Service\Inbox\DropStore;
 use App\Service\Inbox\DuplicateBill;
 
 session_start();
@@ -150,13 +151,9 @@ if ($path === '/drop' && $method === 'POST') {
     if ((int)($f['size'] ?? 0) > 10 * 1024 * 1024) { http_response_code(413); exit('File too large (max 10MB).'); }
     $ext = strtolower(pathinfo((string)($f['name'] ?? ''), PATHINFO_EXTENSION));
     if (!in_array($ext, ['pdf','png','jpg','jpeg','webp','tif','tiff'], true)) { http_response_code(415); exit('Unsupported file type.'); }
-    $dir = STORAGE_ROOT . '/drop';
-    if (!is_dir($dir)) @mkdir($dir, 0770, true);
-    foreach (glob($dir . '/*') ?: [] as $old) {   // expire anything older than 15 min
-        if (is_file($old) && filemtime($old) < time() - 900) @unlink($old);
-    }
-    $token = bin2hex(random_bytes(16)) . '.' . $ext;
-    if (!move_uploaded_file((string)$f['tmp_name'], $dir . '/' . $token)) { http_response_code(500); exit('Could not store file.'); }
+    DropStore::purge();                                   // expire anything past its window
+    $token = DropStore::newToken($ext);
+    if (!move_uploaded_file((string)$f['tmp_name'], DropStore::path($token))) { http_response_code(500); exit('Could not store file.'); }
     header('Content-Type: application/json');
     echo json_encode(['ok' => true, 'url' => abs_base() . '/drop/' . $token]);
     exit;
@@ -189,6 +186,8 @@ if ($path === '/inbox/log' && $method === 'POST') {
             'att_size'       => (int)($_POST['size'] ?? 0),
             'delivery'       => (string)($_POST['status'] ?? ''),
             'delivery_error' => (string)($_POST['error'] ?? ''),
+            // Which file-drop copy this was, so Unidash can send it again itself.
+            'drop_url'       => (string)($_POST['drop_url'] ?? ''),
         ]);
     }
     header('Content-Type: application/json'); echo json_encode(['ok' => true]); exit;
@@ -203,18 +202,25 @@ if ($path === '/wazzup/webhook' && $method === 'POST') {
     // Capture is content-based: recordReply() only acts on an actual bill result
     // (created / already-exists / error) and ignores progress pings and chatter,
     // so it doesn't depend on which number the processor happens to reply from.
+    $duplicates = [];
     foreach ((array)($data['messages'] ?? []) as $m) {
         if (!is_array($m) || !empty($m['isEcho'])) continue;             // skip our own/outgoing
         if (strtolower((string)($m['status'] ?? '')) !== 'inbound') continue; // received only
         $chatId = preg_replace('/\D+/', '', (string)($m['chatId'] ?? ''));
-        InboxLog::recordReply(
+        $res = InboxLog::recordReply(
             (string)($m['messageId'] ?? ''),
             (string)($m['text'] ?? ''),
             (string)($m['contact']['name'] ?? $chatId),
             (string)($m['dateTime'] ?? '')
         );
+        if (!empty($res['duplicate'])) $duplicates[] = (int)$res['row_id'];
     }
-    http_response_code(200); echo 'ok'; exit;
+    // Answer Wazzup first: clearing a duplicate calls Xero and sends the file back
+    // over WhatsApp, which takes far longer than a webhook should hold the line.
+    http_response_code(200); echo 'ok';
+    if (function_exists('fastcgi_finish_request')) fastcgi_finish_request();
+    foreach ($duplicates as $rowId) DuplicateBill::autoResolve($rowId);
+    exit;
 }
 
 if (!is_authed()) redirect('/login');
@@ -375,16 +381,6 @@ if ($path === '/bills/tag-all' && $method === 'POST') {
     $r = BillReconciler::tagAllMatched();
     $_SESSION['flash_ok'] = "Tagged {$r['tagged']} bill(s)" . ($r['failed'] ? ", {$r['failed']} failed" : '') . '.';
     redirect('/?view=bills');
-}
-
-// --- Inbox: clear the bill an "already in Xero" send collided with ---
-// Deletes the leftover draft in Xero and tells the operator to email the
-// supplier invoice in again — that resend is what actually creates the bill.
-if ($path === '/inbox/duplicate/delete' && $method === 'POST') {
-    csrf_check();
-    $res = DuplicateBill::remove((int)($_POST['id'] ?? 0), current_email());
-    $_SESSION[!empty($res['ok']) ? 'flash_ok' : 'flash_err'] = $res['message'];
-    redirect('/?view=inbox');
 }
 
 // --- Module 5: raise a client sales invoice for a trip --------------
@@ -661,7 +657,7 @@ function render_inbox(): void {
         <a class="btn ghost sm" href="<?= e(base()) ?>/?view=inbox" title="Reload the log — new sends and processor replies arrive continuously">Refresh</a>
       </div>
       <p class="muted" style="margin:0 0 12px">
-        Every supplier invoice the mailbox poller sends for processing is logged here — when, who sent it, the attachment, and whether the draft bill was created. Any error reported back appears in the Message column in plain English — hover it to read the processor's full reply. Where the invoice number was already in Xero, <b>Delete duplicate in Xero</b> removes the draft sitting there so you can email the invoice in again.
+        Every supplier invoice the mailbox poller sends for processing is logged here — when, who sent it, the attachment, and whether the draft bill was created. Any error reported back appears in the Message column in plain English — hover it to read the processor's full reply. If the invoice number is already in Xero, Unidash clears the leftover draft bill and sends the invoice for processing again on its own — nothing to press, and no need to email it in a second time.
         <?= $last !== '' ? ' · <b>Last checked</b> ' . e($last) : '' ?> · times are Malaysia time (UTC+8).
       </p>
       <table class="grid"><thead><tr>
@@ -679,29 +675,22 @@ function render_inbox(): void {
         $reply = trim((string)($r['ocr_message'] ?? ''));
         $msg   = InboxLog::plainMessage($r);
         $tip   = $err !== '' && $reply !== '' ? $err . "\n\n" . $reply : ($err !== '' ? $err : $reply);
-        // A duplicate is the one failure fixable from here: delete the bill already
-        // in Xero, then email the invoice in again.
-        $dupNum  = DuplicateBill::offerFor($r) ? DuplicateBill::numberFor($r) : '';
-        $dupDone = DuplicateBill::clearedNote($r);
-        $dupConf = "Delete bill {$dupNum} in Xero?\\n\\nThis removes the draft bill already there. "
-                 . "No new bill is made — email the supplier invoice in again afterwards and it will be created fresh.";
+        // What Unidash did about an "already in Xero" duplicate, in its own words.
+        $dupDone = DuplicateBill::note($r);
+        $retryOf = (int)($r['retry_of'] ?? 0);
       ?>
         <tr>
           <td class="nowrap mono"><?= e($when ?: '—') ?><div class="muted small"><?= e($tm) ?></div></td>
           <td><?= ($r['sender'] ?? '') !== '' ? e((string)$r['sender']) : '<span class="muted">—</span>' ?></td>
-          <td><?php if (($r['attachment'] ?? '') !== ''): ?><span class="mono" style="font-size:12px"><?= e((string)$r['attachment']) ?></span><?php else: ?><span class="muted">—</span><?php endif; ?></td>
+          <td>
+            <?php if (($r['attachment'] ?? '') !== ''): ?><span class="mono" style="font-size:12px"><?= e((string)$r['attachment']) ?></span><?php else: ?><span class="muted">—</span><?php endif; ?>
+            <?php if ($retryOf): ?><div class="muted small" title="Unidash cleared the duplicate bill in Xero and sent this file again by itself">↻ sent again automatically</div><?php endif; ?>
+          </td>
           <td><?= $dpill((string)($r['delivery'] ?? '')) ?></td>
           <td><?= $ocell($r) ?></td>
           <td>
             <?php if ($msg !== ''): ?><span class="billdesc" style="max-width:340px" title="<?= e($tip !== '' ? $tip : $msg) ?>"><?= e(mb_strimwidth($msg, 0, 90, '…')) ?></span><?php else: ?><span class="muted">—</span><?php endif; ?>
-            <?php if ($dupNum !== ''): ?>
-              <form method="post" action="<?= e(base()) ?>/inbox/duplicate/delete" style="margin-top:6px" onsubmit="return confirm('<?= e($dupConf) ?>')">
-                <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>"><input type="hidden" name="id" value="<?= (int)$r['id'] ?>">
-                <button class="btn danger sm" title="Deletes the draft bill sitting in Xero under <?= e($dupNum) ?>, so the invoice can be emailed in again">Delete duplicate in Xero</button>
-              </form>
-            <?php elseif ($dupDone !== ''): ?>
-              <div class="muted small" style="margin-top:4px" title="<?= e($dupDone) ?>">Duplicate cleared — email the supplier invoice in again.</div>
-            <?php endif; ?>
+            <?php if ($dupDone !== ''): ?><div class="muted small" style="max-width:340px" title="<?= e($dupDone) ?>"><?= e(mb_strimwidth($dupDone, 0, 80, '…')) ?></div><?php endif; ?>
           </td>
         </tr>
       <?php endforeach; endif; ?>

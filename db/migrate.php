@@ -30,6 +30,8 @@ $add = [
         'bill_url'    => 'TEXT',
         'bill_number' => 'TEXT',
         'dup_action'  => 'TEXT',
+        'drop_token'  => 'TEXT',
+        'retry_of'    => 'INTEGER',
     ],
 ];
 foreach ($add as $table => $cols) {

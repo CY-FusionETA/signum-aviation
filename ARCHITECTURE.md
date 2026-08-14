@@ -55,6 +55,19 @@ PO before booking the bill.
 | `XeroStubClient.php` | Dry-run client used when Xero isn't connected — returns the exact payload it *would* send. |
 | `XeroClientFactory.php` | Returns the live client when enabled + configured + connected, else the stub. |
 
+### Inbox intake (`src/Service/Inbox/`)
+Supplier invoices arrive by email: a Gmail Apps Script drops each attachment on
+`/drop` and relays its public URL to the processor (WazzOCR) over WhatsApp; the
+processor OCRs it, creates the draft Xero bill and answers on the same line,
+which lands back on `/wazzup/webhook`. The Inbox tab is that pipeline's log.
+
+| File | Role |
+|---|---|
+| `InboxLog.php` | One row per attachment sent. `recordDelivery()` logs a send (and which drop file it was); `recordReply()` classifies the processor's WhatsApp messages (`success`/`failed`/`note`/`ignore`) and attaches the result to the oldest still-pending send inside its match window; `plainMessage()` renders a failure as one plain-English sentence for the table. |
+| `DropStore.php` | The `/drop` file store: unguessable tokens, `RETAIN_MINUTES` expiry, and the token↔row association that lets Unidash re-send a file itself. |
+| `Wazzup.php` | Outbound leg — sends a file URL to the processor's WhatsApp line, using the WABA channel's own Wazzup credentials (`config 'wazzup'`). |
+| `DuplicateBill.php` | Automatic recovery from "⚠️ Already exists in Xero": deletes the leftover **DRAFT** bill in Xero (approved/paid/submitted bills are never touched) and re-sends the same file so the bill is recreated — no operator action. Logged as a `retry_of` row; one attempt per invoice; kill-switch in `cli/auto-clear-duplicates.php`. |
+
 ### LEON pipeline (`src/Service/Leon/`)
 | File | Role |
 |---|---|

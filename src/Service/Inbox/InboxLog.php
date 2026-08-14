@@ -45,22 +45,38 @@ final class InboxLog
     public const MATCH_WINDOW_HOURS    = 6;
     public const SILENT_WINDOW_MINUTES = 10;
 
-    /** Record one attachment the poller sent for processing. */
+    /**
+     * Record one attachment sent for processing — by the Gmail poller, or by
+     * Unidash itself when it re-sends a file after clearing a duplicate bill
+     * ('retry_of' = the row being retried).
+     *
+     * The file-drop token is kept so the same file can be sent again: the poller
+     * passes 'drop_url', and an older Apps Script that doesn't is matched to its
+     * upload by type + size (see DropStore::claimFor).
+     */
     public static function recordDelivery(array $d): int
     {
-        $sent = (string)($d['delivery'] ?? '') === 'sent';
+        $sent  = (string)($d['delivery'] ?? '') === 'sent';
+        $name  = (string)($d['attachment'] ?? '');
+        $size  = (int)($d['att_size'] ?? 0);
+        $token = isset($d['drop_token'])
+            ? (string)$d['drop_token']
+            : (DropStore::tokenFromUrl((string)($d['drop_url'] ?? '')) ?: ($sent ? DropStore::claimFor($name, $size) : ''));
+
         return Db::insert('inbox_events', [
             'event_at'       => self::utc((string)($d['event_at'] ?? '')),
             'source'         => 'gmail',
             'sender'         => (string)($d['sender'] ?? ''),
             'subject'        => (string)($d['subject'] ?? ''),
-            'attachment'     => (string)($d['attachment'] ?? ''),
-            'att_size'       => (int)($d['att_size'] ?? 0),
+            'attachment'     => $name,
+            'att_size'       => $size,
             'delivery'       => (string)($d['delivery'] ?? ''),
             'delivery_error' => (string)($d['delivery_error'] ?? ''),
             // Only a successfully sent file can get a processor result back.
             'ocr_status'     => $sent ? 'pending' : '',
             'ocr_message'    => '',
+            'drop_token'     => $token,
+            'retry_of'       => (int)($d['retry_of'] ?? 0) ?: null,
         ]);
     }
 
@@ -71,7 +87,11 @@ final class InboxLog
      * within the match window: a 'note' only appends to that row's message thread,
      * a success/failure closes the row and stores the Xero link + invoice number.
      * If nothing is waiting it's dropped (no standalone rows).
-     * @return array{ok:bool, matched:bool, status:string}
+     *
+     * 'row_id' is the row the reply closed and 'duplicate' says the processor
+     * refused because the bill is already in Xero — the caller acts on that by
+     * clearing the bill and re-sending (see DuplicateBill::autoResolve).
+     * @return array{ok:bool, matched:bool, status:string, row_id?:int, duplicate?:bool}
      */
     public static function recordReply(string $messageId, string $text, string $from, string $eventAt): array
     {
@@ -104,7 +124,13 @@ final class InboxLog
             "UPDATE inbox_events SET ocr_status=?, ocr_message=?, ocr_at=?, wazzup_message_id=?, bill_url=?, bill_number=? WHERE id=?",
             [$status, $full, $at, $messageId, self::extractBillUrl($full), self::extractBillNumber($full), (int)$pending['id']]
         );
-        return ['ok' => true, 'matched' => true, 'status' => $status];
+        return [
+            'ok'        => true,
+            'matched'   => true,
+            'status'    => $status,
+            'row_id'    => (int)$pending['id'],
+            'duplicate' => $status === 'failed' && self::isDuplicate($text),
+        ];
     }
 
     /** The delivery a reply timestamped $at belongs to: oldest pending, still in window. */

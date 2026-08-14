@@ -5,9 +5,10 @@ namespace App\Service\Xero;
 
 /**
  * Stub used whenever Xero is not connected. It reads/creates nothing in Xero and
- * fails cleanly, so the app never errors when no org is linked.
+ * fails cleanly, so the app never errors when no org is linked. Not final: the
+ * tests subclass it to stand in for a connected org.
  */
-final class XeroStubClient implements XeroClientInterface
+class XeroStubClient implements XeroClientInterface
 {
     public function listActiveBills(): array
     {

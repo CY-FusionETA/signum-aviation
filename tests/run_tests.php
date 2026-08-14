@@ -627,26 +627,135 @@ check('plain: unreadable file → fixed wording',
       $IL::plainMessage(['ocr_status'=>'failed','ocr_message'=>"❌ *Unsupported file* — could not read it"]),
       'The invoice could not be read — send a clearer PDF or photo.');
 
-// The button only shows on an uncleared duplicate that names its bill.
-check('offer: duplicate row', $DB::offerFor($rowD), true);
-check('offer: duplicate bill number', $DB::numberFor($rowD), 'Demo12345-SN030473');
-check('offer: not on a plain failure', $DB::offerFor(\App\Db::one("SELECT * FROM inbox_events WHERE id=?", [$id2])), false);
-check('offer: not on a created bill', $DB::offerFor($rowA), false);
+// The Inbox clears an "already in Xero" duplicate by itself: delete the leftover
+// DRAFT bill, then re-send the same file so the bill is created fresh.
+check('duplicate is pending clearing', $DB::isPending($rowD), true);
+check('  → knows the bill number', $DB::numberFor($rowD), 'Demo12345-SN030473');
+check('not pending on a plain failure', $DB::isPending(\App\Db::one("SELECT * FROM inbox_events WHERE id=?", [$id2])), false);
+check('not pending on a created bill', $DB::isPending($rowA), false);
 
-// Xero is not connected in the suite, so the delete fails cleanly and the row is
-// left untouched — the button must stay available for a real attempt.
-$att = $DB::remove((int)$rowD['id'], 'tester@example.com');
-check('remove without Xero fails cleanly', $att['ok'], false);
-check('  → says which bill it could not look up', strpos($att['message'], 'Demo12345-SN030473') !== false, true);
-check('  → row not stamped', $DB::offerFor(\App\Db::one("SELECT * FROM inbox_events WHERE id=?", [$rowD['id']])), true);
-check('remove on an unknown row', $DB::remove(999999)['ok'], false);
+// Fake Xero orgs, so the tests never touch a real one.
+$fakeXero = function (array $found, bool $delOk = true) {
+    return new class($found, $delOk) extends \App\Service\Xero\XeroStubClient {
+        public $deleted = [];
+        private $found; private $delOk;
+        public function __construct(array $found, bool $delOk) { $this->found = $found; $this->delOk = $delOk; }
+        public function findBillByNumber(string $n): array { return $this->found + ['invoice_number' => $n]; }
+        public function deleteDraftBill(string $id): array {
+            $this->deleted[] = $id;
+            return $this->delOk ? ['ok' => true, 'status' => 'DELETED', 'stubbed' => false]
+                                : ['ok' => false, 'status' => 'DRAFT', 'stubbed' => false, 'error' => 'Xero said no'];
+        }
+    };
+};
+$DRAFT = ['ok'=>true,'found'=>true,'invoice_id'=>'inv-1','status'=>'DRAFT','supplier'=>'S','total'=>1.0,'currency'=>'EUR'];
+$reload = fn(int $id) => \App\Db::one("SELECT * FROM inbox_events WHERE id=?", [$id]);
+$dupRow = fn(string $token = '') => (function () use ($IL, $exists, $token) {
+    $id = $IL::recordDelivery(['event_at'=>gmdate('Y-m-d\TH:i:s\Z'),'sender'=>'ops@asa.com','subject'=>'Invoice',
+                               'attachment'=>'dup.pdf','att_size'=>1234,'delivery'=>'sent','drop_token'=>$token]);
+    \App\Db::q("UPDATE inbox_events SET ocr_status='failed', ocr_message=?, bill_number='Demo12345-SN030473' WHERE id=?", [$exists, $id]);
+    return $id;
+})();
 
-// Once cleared, the button is gone and the row says what was done.
-\App\Db::q("UPDATE inbox_events SET dup_action=? WHERE id=?", ['Deleted bill Demo12345-SN030473 in Xero', $rowD['id']]);
-$rowD2 = \App\Db::one("SELECT * FROM inbox_events WHERE id=?", [$rowD['id']]);
-check('cleared duplicate stops offering', $DB::offerFor($rowD2), false);
-check('  → keeps the note', $DB::clearedNote($rowD2), 'Deleted bill Demo12345-SN030473 in Xero');
-check('  → refuses a second delete', $DB::remove((int)$rowD2['id'])['ok'], false);
+// The file is still in the drop, so the whole cycle runs: delete + re-send.
+$dropDir = sys_get_temp_dir() . '/skyledger-drop-' . getmypid();
+@mkdir($dropDir, 0770, true);
+$GLOBALS['config']['drop']['dir'] = $dropDir;
+register_shutdown_function(function () use ($dropDir) {
+    foreach (glob($dropDir . '/*') ?: [] as $f) @unlink($f);
+    @rmdir($dropDir);
+});
+// Sending must never leave the test run, so the relay is deliberately unconfigured.
+$GLOBALS['config']['wazzup'] = ['api_key' => '', 'channel_id' => '', 'wazzocr_number' => ''];
+check('relay off in tests', \App\Service\Inbox\Wazzup::isConfigured(), false);
+
+$token = 'a1b2c3d4e5f60718293a4b5c6d7e8f90.pdf';
+file_put_contents($dropDir . '/' . $token, str_repeat('x', 1234));
+check('DropStore finds the file', \App\Service\Inbox\DropStore::has($token), true);
+check('DropStore token from url', \App\Service\Inbox\DropStore::tokenFromUrl('https://x.test/drop/' . $token), $token);
+check('DropStore public url', \App\Service\Inbox\DropStore::url($token, 'https://x.test'), 'https://x.test/drop/' . $token);
+
+$autoId = $dupRow($token);
+$before = (int)\App\Db::scalar("SELECT COUNT(*) FROM inbox_events");
+$x  = $fakeXero($DRAFT);
+$rs = $DB::autoResolve($autoId, $x);
+check('draft duplicate is deleted in Xero', $x->deleted, ['inv-1']);
+check('  → a re-send row is logged', (int)\App\Db::scalar("SELECT COUNT(*) FROM inbox_events"), $before + 1);
+$retry = \App\Db::one("SELECT * FROM inbox_events WHERE retry_of = ?", [$autoId]);
+check('  → retry carries the same file', $retry['drop_token'], $token);
+check('  → retry reuses the invoice details', [$retry['attachment'], (int)$retry['att_size']], ['dup.pdf', 1234]);
+// The relay is off in tests, so the send fails and the retry row says so — the
+// row still exists, which is what stops a fast reply landing on nothing.
+check('  → failed send marked on the retry row', $retry['delivery'], 'failed');
+check('  → and it is not left waiting', $retry['ocr_status'], '');
+check('  → original says what was done', strpos((string)$reload($autoId)['dup_action'], 'Deleted bill Demo12345-SN030473 in Xero') === 0, true);
+check('  → and is not tried twice', $DB::isPending($reload($autoId)), false);
+check('  → repeat call is a no-op', $DB::autoResolve($autoId, $x)['ok'], false);
+check('  → no second delete', $x->deleted, ['inv-1']);
+
+// An approved bill is somebody's real work: never deleted, and nothing re-sent.
+$authId = $dupRow($token);
+$x2 = $fakeXero(['ok'=>true,'found'=>true,'invoice_id'=>'inv-2','status'=>'AUTHORISED','supplier'=>'S','total'=>1.0,'currency'=>'EUR']);
+$DB::autoResolve($authId, $x2);
+check('authorised duplicate left in Xero', $x2->deleted, []);
+check('  → row explains why', strpos((string)$reload($authId)['dup_action'], 'is authorised in Xero, not a draft') !== false, true);
+check('  → nothing re-sent', (int)\App\Db::scalar("SELECT COUNT(*) FROM inbox_events WHERE retry_of = ?", [$authId]), 0);
+
+// A retry that hits the same bill again stops there — no delete/re-send loop.
+$loopId = $IL::recordDelivery(['event_at'=>gmdate('Y-m-d\TH:i:s\Z'),'attachment'=>'dup.pdf','att_size'=>1234,
+                               'delivery'=>'sent','drop_token'=>$token,'retry_of'=>$autoId]);
+\App\Db::q("UPDATE inbox_events SET ocr_status='failed', ocr_message=?, bill_number='Demo12345-SN030473' WHERE id=?", [$exists, $loopId]);
+$x3 = $fakeXero($DRAFT);
+check('retry duplicate is not cleared again', $DB::autoResolve($loopId, $x3)['ok'], false);
+check('  → nothing deleted', $x3->deleted, []);
+check('  → row says it needs a look', strpos((string)$reload($loopId)['dup_action'], 'Still already in Xero after re-sending'), 0);
+
+// Gone from Xero already: nothing to delete, but the invoice is still re-sent.
+$goneId = $dupRow($token);
+$x4 = $fakeXero(['ok'=>true,'found'=>false,'invoice_id'=>'','status'=>'','supplier'=>'','total'=>null,'currency'=>'']);
+$DB::autoResolve($goneId, $x4);
+check('missing bill → still re-sent', (int)\App\Db::scalar("SELECT COUNT(*) FROM inbox_events WHERE retry_of = ?", [$goneId]), 1);
+check('  → row says it was already gone', strpos((string)$reload($goneId)['dup_action'], 'was already gone from Xero') !== false, true);
+
+// The file has expired out of the drop: say so instead of re-sending nothing.
+$noFileId = $dupRow('');
+$DB::autoResolve($noFileId, $fakeXero($DRAFT));
+check('no file → nothing re-sent', (int)\App\Db::scalar("SELECT COUNT(*) FROM inbox_events WHERE retry_of = ?", [$noFileId]), 0);
+check('  → row explains', strpos((string)$reload($noFileId)['dup_action'], 'could not re-send the invoice') > 0, true);
+
+// A Xero outage must not look like a cleared duplicate.
+$errId = $dupRow($token);
+$DB::autoResolve($errId, $fakeXero(['ok'=>false,'found'=>false,'invoice_id'=>'','status'=>'','supplier'=>'','total'=>null,'currency'=>'','error'=>'Xero is down']));
+check('lookup failure is reported', strpos((string)$reload($errId)['dup_action'], 'Could not look up bill'), 0);
+check('  → nothing re-sent', (int)\App\Db::scalar("SELECT COUNT(*) FROM inbox_events WHERE retry_of = ?", [$errId]), 0);
+
+// The kill-switch leaves duplicates entirely alone.
+$offId = $dupRow($token);
+Settings::set('inbox.auto_clear_duplicates', '0');
+check('switch off → disabled', $DB::enabled(), false);
+$x5 = $fakeXero($DRAFT);
+$DB::autoResolve($offId, $x5);
+check('  → nothing deleted', $x5->deleted, []);
+check('  → row says it is off', strpos((string)$reload($offId)['dup_action'], 'Automatic clearing is off'), 0);
+Settings::set('inbox.auto_clear_duplicates', '1');
+
+// A reply tells the caller which row to clear — that is what fires the recovery.
+$hookId = $IL::recordDelivery(['event_at'=>gmdate('Y-m-d\TH:i:s\Z'),'attachment'=>'hook.pdf','att_size'=>10,'delivery'=>'sent']);
+$hook   = $IL::recordReply('wz-dup-hook', $exists, 'Bot', gmdate('Y-m-d\TH:i:s\Z'));
+check('duplicate reply flags itself', $hook['duplicate'], true);
+check('  → and names its row', $hook['row_id'], $hookId);
+check('success reply is not a duplicate', $IL::recordReply('wz-ok-hook', $succ, 'Bot', gmdate('Y-m-d\TH:i:s\Z'))['duplicate'] ?? false, false);
+
+// An older Apps Script posts no drop_url: match the upload by type + size instead.
+$claimTok = 'b1b2c3d4e5f60718293a4b5c6d7e8f91.pdf';
+file_put_contents($dropDir . '/' . $claimTok, str_repeat('y', 4321));
+$claimId = $IL::recordDelivery(['event_at'=>gmdate('Y-m-d\TH:i:s\Z'),'attachment'=>'claimed.pdf','att_size'=>4321,'delivery'=>'sent']);
+check('drop file matched by size', $reload($claimId)['drop_token'], $claimTok);
+$claimId2 = $IL::recordDelivery(['event_at'=>gmdate('Y-m-d\TH:i:s\Z'),'attachment'=>'claimed2.pdf','att_size'=>4321,'delivery'=>'sent']);
+check('  → never claimed twice', (string)$reload($claimId2)['drop_token'], '');
+$urlId = $IL::recordDelivery(['event_at'=>gmdate('Y-m-d\TH:i:s\Z'),'attachment'=>'url.pdf','att_size'=>1,'delivery'=>'sent',
+                              'drop_url'=>'https://x.test/drop/' . $token]);
+check('drop_url wins when given', $reload($urlId)['drop_token'], $token);
 
 // Stub client shapes (Xero disconnected) — never throws, always explains.
 $stub = new \App\Service\Xero\XeroStubClient();
