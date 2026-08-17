@@ -93,8 +93,22 @@ $imp = LeonProcessor::import("$FX/flight_count_inc.csv", 'inc');
 check('import parsed count', $imp['summary']['parsed'], 17);
 check('import marks all new first time', $imp['summary']['new'], 17);
 check('master list persisted', count(TripRepo::all()), 17);
+// Re-importing the SAME file re-files nothing — only records that changed move.
 $imp2 = LeonProcessor::import("$FX/flight_count_inc.csv", 'inc');
-check('re-import updates, no dupes', $imp2['summary']['updated'], 17);
+check('re-import of identical file → all unchanged', $imp2['summary']['unchanged'], 17);
+check('  → nothing re-filed as updated', $imp2['summary']['updated'], 0);
+check('  → and no duplicates created', count(TripRepo::all()), 17);
+
+// A trip whose content actually changed IS re-filed (and only that one).
+$one = TripRepo::all()[0];
+[, $stU] = TripRepo::upsert(['trip_number'=>$one['trip_number'],'client_name'=>'CHANGED Co','aircraft'=>$one['aircraft'],
+    'route'=>$one['route'],'start_date'=>$one['start_date'],'end_date'=>$one['end_date'],
+    'flights_count'=>$one['flights_count'],'currency'=>$one['currency']], (string)$one['entity'], 'again.csv');
+check('changed content → updated', $stU, 'updated');
+[, $stN] = TripRepo::upsert(['trip_number'=>$one['trip_number'],'client_name'=>'CHANGED Co','aircraft'=>$one['aircraft'],
+    'route'=>$one['route'],'start_date'=>$one['start_date'],'end_date'=>$one['end_date'],
+    'flights_count'=>$one['flights_count'],'currency'=>$one['currency']], (string)$one['entity'], 'again.csv');
+check('same content again → unchanged', $stN, 'unchanged');
 check('still 17 rows (idempotent upsert)', count(TripRepo::all()), 17);
 
 // --- 8. Module 3: match a supplier bill to a trip -------------------
@@ -821,6 +835,48 @@ check('API error result → failed', \App\Db::one("SELECT ocr_status FROM inbox_
 // No result field (WhatsApp path) still starts pending, unchanged.
 $waId = $IL::recordDelivery(['event_at'=>'2026-08-17T02:02:00Z','attachment'=>'wa.pdf','delivery'=>'sent']);
 check('no result → still pending (WhatsApp path intact)', \App\Db::one("SELECT ocr_status FROM inbox_events WHERE id=?", [$waId])['ocr_status'], 'pending');
+
+// --- 19. Dashboard: "AI at work" activity feed -----------------------
+// Real inbox + LEON rows become read→think→decide→do reasoning steps. Uses a
+// clean table so the counts and ordering are exact.
+$AF = '\App\Service\Activity\ActivityFeed';
+\App\Db::q("DELETE FROM inbox_events");
+\App\Db::q("DELETE FROM leon_trips");
+$now = gmdate('Y-m-d\TH:i:s\Z');
+$IL::recordDelivery(['event_at'=>$now,'sender'=>'CY Weng <e@x.com>','attachment'=>'SN1.pdf','delivery'=>'sent',
+    'result'=>'created','ocr_message'=>'ok','bill_url'=>'https://go.xero.com/b','bill_number'=>'SN1']);
+$errAf = $IL::recordDelivery(['event_at'=>$now,'sender'=>'Simon <s@f.com>','attachment'=>'bad.pdf','delivery'=>'sent',
+    'result'=>'error','ocr_message'=>"❌ *Unsupported file* — could not read it"]);
+$IL::recordDelivery(['event_at'=>$now,'sender'=>'ops@sig.com','attachment'=>'wait.pdf','delivery'=>'sent']);
+TripRepo::upsert(['trip_number'=>'35507','client_name'=>'Polaris Aviation','aircraft'=>'N700LE',
+    'route'=>'KSWF - KHPN - EGGW','start_date'=>'2026-07-21','end_date'=>'2026-07-21','flights_count'=>2], 'inc', 'Flight Count Inc.xlsx');
+
+$feed = $AF::recent(20);
+check('feed returns every real row', count($feed), 4);
+$byTitle = [];
+foreach ($feed as $ev) $byTitle[$ev['title']] = $ev;
+check('created invoice → ok + 4 steps', [$byTitle['Supplier invoice SN1']['status'], count($byTitle['Supplier invoice SN1']['steps'])], ['ok', 4]);
+check('  → decide names the invoice', $byTitle['Supplier invoice SN1']['steps'][2]['text'], 'Invoice SN1 is new — create the draft bill');
+check('  → do created the bill, with a link', [$byTitle['Supplier invoice SN1']['steps'][3]['text'], $byTitle['Supplier invoice SN1']['link'] !== ''], ['Created the draft bill in Xero', true]);
+check('  → read names sender + file', $byTitle['Supplier invoice SN1']['steps'][0]['text'], 'Read SN1.pdf from CY Weng');
+$errEv = null; foreach ($feed as $ev) if ($ev['kind']==='invoice' && $ev['status']==='err') $errEv = $ev;
+check('failed invoice → err + plain-English reason', strpos($errEv['steps'][3]['text'], 'The invoice could not be read') !== false, true);
+$pendEv = null; foreach ($feed as $ev) if ($ev['status']==='pending') $pendEv = $ev;
+check('pending invoice → waiting step', $pendEv['steps'][3]['text'], 'Waiting for the result…');
+check('trip → ok + names client/route', [$byTitle['Trip 35507']['status'], $byTitle['Trip 35507']['steps'][2]['text']],
+      ['ok', 'Polaris Aviation · KSWF - KHPN - EGGW']);
+check('  → trip step counts the legs', strpos($byTitle['Trip 35507']['steps'][1]['text'], '2 flight legs') !== false, true);
+
+// A duplicate the app cleared reads as a success, not an error.
+$dupAf = $IL::recordDelivery(['event_at'=>$now,'attachment'=>'dup.pdf','delivery'=>'sent','result'=>'error','ocr_message'=>'already exists in Xero']);
+\App\Db::q("UPDATE inbox_events SET dup_ok=1, dup_action='cleared' WHERE id=?", [$dupAf]);
+$clr = null; foreach ($AF::recent(20) as $ev) if (($ev['kind']==='invoice') && strpos($ev['steps'][3]['text'],'re-created')!==false) $clr = $ev;
+check('cleared duplicate → ok, not err', $clr['status'] ?? 'MISSING', 'ok');
+
+$pulse = $AF::pulse();
+check('pulse is working (fresh activity)', $pulse['active'], true);
+check('  → tallies today', [$pulse['today']['bills'], $pulse['today']['trips']], [1, 1]);
+check('  → cleared duplicate is not counted an error', $pulse['today']['errors'], 1); // only bad.pdf, not the cleared dup
 
 echo "\n" . str_repeat('=', 40) . "\n";
 printf("TOTAL: %d passed, %d failed\n", $pass, $fail);

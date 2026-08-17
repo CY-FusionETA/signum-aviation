@@ -232,6 +232,18 @@ if ($path === '/wazzup/webhook' && $method === 'POST') {
 
 if (!is_authed()) redirect('/login');
 
+// --- "AI at work" live feed (dashboard) -----------------------------
+// Real activity — Inbox deliveries and LEON trips — reasoned into steps the
+// dashboard animates. Read-only JSON, polled by the panel every few seconds.
+if ($path === '/activity/feed' && $method === 'GET') {
+    header('Content-Type: application/json');
+    echo json_encode([
+        'pulse'  => \App\Service\Activity\ActivityFeed::pulse(),
+        'events' => \App\Service\Activity\ActivityFeed::recent(30),
+    ], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
 // --- settings -------------------------------------------------------
 if ($path === '/settings' && $method === 'POST') {
     csrf_check();
@@ -279,7 +291,7 @@ if ($path === '/import' && $method === 'POST') {
     if (!$files) { $_SESSION['flash_err'] = 'Choose one or more LEON files (CSV, XLSX or PDF).'; redirect('/?view=trips'); }
 
     $dir = STORAGE_ROOT . '/uploads'; @mkdir($dir, 0770, true);
-    $tot = ['files' => 0, 'parsed' => 0, 'new' => 0, 'updated' => 0];
+    $tot = ['files' => 0, 'parsed' => 0, 'new' => 0, 'updated' => 0, 'unchanged' => 0];
     $errs = [];
     foreach ($files as $f) {
         if (($f['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK || !is_uploaded_file($f['tmp_name'])) continue;
@@ -291,13 +303,19 @@ if ($path === '/import' && $method === 'POST') {
         move_uploaded_file($f['tmp_name'], $dest);
         try {
             $imp = LeonProcessor::import($dest, $entity)['summary'];
-            $tot['files']++; $tot['parsed'] += $imp['parsed']; $tot['new'] += $imp['new']; $tot['updated'] += $imp['updated'];
+            $tot['files']++; $tot['parsed'] += $imp['parsed'];
+            $tot['new'] += $imp['new']; $tot['updated'] += $imp['updated']; $tot['unchanged'] += $imp['unchanged'];
         } catch (\Throwable $e) {
             $errs[] = $name . ': ' . $e->getMessage();
         }
     }
     if ($tot['files']) {
-        $_SESSION['flash_ok'] = "Imported {$tot['files']} file(s) · {$tot['parsed']} trips ({$tot['new']} new, {$tot['updated']} updated) into the master list.";
+        // Only the rows that needed it are re-filed; unchanged trips are left as they were.
+        $touched = $tot['new'] + $tot['updated'];
+        $_SESSION['flash_ok'] = $touched > 0
+            ? "Imported {$tot['files']} file(s) · {$tot['new']} new, {$tot['updated']} updated"
+              . ($tot['unchanged'] ? ", {$tot['unchanged']} unchanged (left as they were)" : '') . '.'
+            : "Imported {$tot['files']} file(s) · nothing changed — all {$tot['unchanged']} trips already up to date.";
     }
     if ($errs)                       $_SESSION['flash_err'] = implode(' · ', $errs);
     if (!$tot['files'] && !$errs)    $_SESSION['flash_err'] = 'No valid files were uploaded.';
@@ -583,6 +601,7 @@ function render_home(string $view): void {
     </script>
     <script><?= app_js() ?></script>
     <script><?= dz_js() ?></script>
+    <script><?= ai_js() ?></script>
     </body></html><?php
 }
 
@@ -737,6 +756,31 @@ function render_dashboard(array $stat, array $rows, bool $connected, string $ten
       <div class="tile"><div class="tnum blue"><?= $stat['matched'] ?></div><div class="tlbl">Matched to bills<?= $connected ? ' · '.e($tenant) : '' ?></div></div>
       <div class="tile"><div class="tnum green"><?= $stat['ready'] ?></div><div class="tlbl">Ready to invoice</div></div>
       <div class="tile"><div class="tnum"><?= $stat['inc'] ?> <span class="tmini">Inc</span> / <?= $stat['ltd'] ?> <span class="tmini">Ltd</span></div><div class="tlbl">By entity</div></div>
+    </section>
+
+    <section class="card aiwork" id="aiwork">
+      <div class="chead">
+        <h2><span class="aidot" id="aidot"></span> AI at work</h2>
+        <div class="aiactions">
+          <span class="aistate watching" id="aistate">Watching</span>
+          <button class="btn ghost sm" type="button" id="aisim" title="Play a demo of how the assistant reads, reasons and acts on an invoice">▷ Simulate</button>
+        </div>
+      </div>
+      <p class="muted ailede">This is what the assistant is doing behind the scenes — every supplier invoice it reads, the call it makes, and each LEON trip it files. It moves on its own as work comes in; press <b>Simulate</b> to watch one run start to finish.</p>
+      <div class="aigrid">
+        <div class="aibrain" aria-hidden="true">
+          <div class="aiorb" id="aiorb"><span></span><span></span><span></span><i>AI</i></div>
+          <div class="aiphases" id="aiphases">
+            <span data-phase="read">Read</span>
+            <span data-phase="think">Think</span>
+            <span data-phase="decide">Decide</span>
+            <span data-phase="do">Do</span>
+          </div>
+        </div>
+        <ol class="aistream" id="aistream" aria-live="polite">
+          <li class="aiempty">Waiting for activity…</li>
+        </ol>
+      </div>
     </section>
 
     <section class="card">
@@ -1327,6 +1371,141 @@ const rowsEl = $('#rows'); if (!rowsEl) { /* not on trips view */ } else {
 JS;
 }
 
+function ai_js(): string {
+    return <<<'JS'
+(function(){
+  const root = document.getElementById('aiwork');
+  if(!root) return;
+  const streamEl = document.getElementById('aistream');
+  const stateEl  = document.getElementById('aistate');
+  const phasesEl = document.getElementById('aiphases');
+  const orbEl    = document.getElementById('aiorb');
+  const simBtn   = document.getElementById('aisim');
+  const ICON = {ok:'✓', err:'!', pending:'…'};
+  let seen = null, busy = false;
+
+  const key = ev => (ev.at||'')+'|'+(ev.title||'')+'|'+((ev.steps&&ev.steps[3]&&ev.steps[3].text)||'');
+  const esc = s => { const d=document.createElement('div'); d.textContent = s==null?'':String(s); return d.innerHTML; };
+  const wait = ms => new Promise(r=>setTimeout(r,ms));
+
+  function ago(iso){
+    const t = Date.parse(iso||''); if(isNaN(t)) return '';
+    const s = Math.max(0,(Date.now()-t)/1000);
+    if(s<45) return 'just now';
+    if(s<3600) return Math.round(s/60)+'m ago';
+    if(s<86400) return Math.round(s/3600)+'h ago';
+    return Math.round(s/86400)+'d ago';
+  }
+
+  function card(ev, fresh){
+    const li = document.createElement('li');
+    li.className = 'aiev '+(ev.status||'ok')+(fresh?' fresh':'');
+    const link = ev.link ? '<div class="aiev-f"><a class="link" href="'+esc(ev.link)+'" target="_blank" rel="noopener">View ↗</a></div>' : '';
+    li.innerHTML =
+      '<div class="aiev-h"><span class="aibadge '+(ev.status||'ok')+'">'+(ICON[ev.status]||'•')+'</span>'
+      + '<b>'+esc(ev.title||'')+'</b><time>'+ago(ev.at)+'</time></div>'
+      + '<div class="aiev-steps">'
+      + (ev.steps||[]).map(s=>'<div class="aistep" data-phase="'+esc(s.phase)+'"><i></i><span>'+esc(s.text)+'</span></div>').join('')
+      + '</div>' + link;
+    return li;
+  }
+
+  function setWorking(on){
+    root.classList.toggle('working', on);
+    stateEl.textContent = on?'Working':'Watching';
+    stateEl.className = 'aistate '+(on?'working':'watching');
+  }
+  function litePhase(p){
+    phasesEl.querySelectorAll('span').forEach(x=>x.classList.toggle('on', x.dataset.phase===p));
+    orbEl.className = 'aiorb spin phase-'+(p||'');
+  }
+  function restOrb(){ orbEl.className='aiorb'; phasesEl.querySelectorAll('span').forEach(x=>x.classList.remove('on')); }
+
+  // Reveal one event's four beats (read→think→decide→do), lighting the brain.
+  function play(li){
+    return new Promise(res=>{
+      const steps = [...li.querySelectorAll('.aistep')];
+      setWorking(true);
+      let i=0;
+      (function beat(){
+        if(i>=steps.length){ restOrb(); li.classList.remove('running'); res(); return; }
+        litePhase(steps[i].dataset.phase);
+        steps[i].classList.add('show');
+        i++; setTimeout(beat, 560);
+      })();
+    });
+  }
+
+  function renderList(events){
+    streamEl.innerHTML = '';
+    if(!events.length){ streamEl.innerHTML = '<li class="aiempty">Waiting for activity…</li>'; return; }
+    events.slice(0,12).forEach(ev=>{
+      const li = card(ev, false);
+      li.querySelectorAll('.aistep').forEach(s=>s.classList.add('show'));
+      streamEl.appendChild(li);
+    });
+  }
+
+  async function animateIn(ev){
+    const empty = streamEl.querySelector('.aiempty'); if(empty) empty.remove();
+    const li = card(ev, true); li.classList.add('running');
+    streamEl.prepend(li);
+    [...streamEl.children].slice(24).forEach(n=>n.remove());
+    await play(li);
+  }
+
+  async function poll(){
+    if(busy) return;
+    let data;
+    try {
+      const r = await fetch(BASE+'/activity/feed', {headers:{'Accept':'application/json'}});
+      if(!r.ok) return;
+      data = await r.json();
+    } catch(e){ return; }
+    const events = data.events || [];
+    if(seen === null){ renderList(events); seen = events.length?key(events[0]):''; setWorking(!!(data.pulse&&data.pulse.active)); return; }
+    let idx = events.findIndex(e=>key(e)===seen);
+    if(idx === -1) idx = Math.min(events.length, 3);
+    const fresh = events.slice(0, idx).reverse();   // oldest-new first, so newest lands on top
+    if(fresh.length){
+      busy = true;
+      for(const ev of fresh){ await animateIn(ev); }
+      seen = key(events[0]); busy = false;
+    }
+    if(!busy) setWorking(!!(data.pulse && data.pulse.active));
+  }
+
+  // A scripted run for demos — reads, reasons, acts. Touches no data.
+  const DEMOS = [
+    {kind:'invoice',status:'ok',title:'Supplier invoice SN030492',link:'',steps:[
+      {phase:'read',text:'Read SN030492.pdf from Signature Flight Support'},
+      {phase:'think',text:'Extracted supplier, €1,012.72 and invoice SN030492'},
+      {phase:'decide',text:'Invoice SN030492 is new — create the draft bill'},
+      {phase:'do',text:'Created the draft bill in Xero'}]},
+    {kind:'invoice',status:'ok',title:'Supplier invoice HKG-GH-037',link:'',steps:[
+      {phase:'read',text:'Read HKG-GH-037.pdf from ASA South China'},
+      {phase:'think',text:'Seen this invoice number before — check Xero'},
+      {phase:'decide',text:'Already in Xero — clear the stale copy and redo it'},
+      {phase:'do',text:'Deleted the old bill and re-created it fresh'}]},
+    {kind:'trip',status:'ok',title:'Trip 35507',link:'',steps:[
+      {phase:'read',text:'Read Flight Count Inc.xlsx'},
+      {phase:'think',text:'Parsed the Flight Count row — 2 flight legs'},
+      {phase:'decide',text:'Polaris Aviation · KSWF - KHPN - EGGW'},
+      {phase:'do',text:'Added to the trip master list'}]},
+  ];
+  async function simulate(){
+    if(busy) return; busy = true; simBtn.disabled = true;
+    for(const d of DEMOS){ await animateIn(Object.assign({at:new Date().toISOString()}, d)); await wait(320); }
+    busy = false; simBtn.disabled = false; setWorking(false);
+  }
+
+  simBtn.addEventListener('click', simulate);
+  poll();
+  setInterval(poll, 4000);
+})();
+JS;
+}
+
 function styles(): void { ?><style>
 :root{
   --bg:#f4f6fb; --card:#ffffff; --ink:#1f2430; --mut:#6b7280; --line:#e6e8f0;
@@ -1515,4 +1694,59 @@ body.login{display:flex;align-items:center;justify-content:center;min-height:100
 .quickrow:before,.quickrow:after{content:"";flex:1;height:1px;background:var(--line)}
 .btn.quick{gap:9px;font-weight:600}
 .btn.quick .av{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:var(--accent);color:#fff;font-size:11px;font-weight:700}
+
+/* --- "AI at work" panel --------------------------------------------- */
+.aiwork{--read:#2563eb;--think:#7c3aed;--decide:#c2820a;--do:#16a34a}
+.aiwork .chead h2{display:flex;align-items:center;gap:9px}
+.aidot{width:10px;height:10px;border-radius:50%;background:var(--gray);box-shadow:0 0 0 0 rgba(148,163,184,.5)}
+.aiwork.working .aidot{background:var(--green);animation:aipulse 1.4s ease-out infinite}
+@keyframes aipulse{0%{box-shadow:0 0 0 0 rgba(22,163,74,.45)}70%{box-shadow:0 0 0 8px rgba(22,163,74,0)}100%{box-shadow:0 0 0 0 rgba(22,163,74,0)}}
+.aiactions{display:flex;align-items:center;gap:10px}
+.aistate{font-size:12px;font-weight:600;padding:3px 10px;border-radius:999px}
+.aistate.watching{color:var(--mut);background:#f1f5f9}
+.aistate.working{color:#0f7a34;background:#dcfce7}
+.ailede{margin:2px 0 14px}
+.aigrid{display:grid;grid-template-columns:120px 1fr;gap:18px;align-items:start}
+@media(max-width:640px){.aigrid{grid-template-columns:1fr}.aibrain{flex-direction:row!important;justify-content:flex-start;gap:16px}}
+.aibrain{display:flex;flex-direction:column;align-items:center;gap:12px;position:sticky;top:8px}
+.aiorb{position:relative;width:92px;height:92px;border-radius:50%;display:grid;place-items:center;
+  background:radial-gradient(circle at 50% 38%,#eef2ff,#fff);border:1px solid var(--line);transition:box-shadow .3s}
+.aiorb i{font-style:normal;font-weight:800;color:var(--nav);font-size:14px;letter-spacing:.06em;z-index:2}
+.aiorb span{position:absolute;border-radius:50%;border:2px solid transparent}
+.aiorb span:nth-child(1){inset:7px;border-top-color:var(--read)}
+.aiorb span:nth-child(2){inset:15px;border-top-color:var(--think)}
+.aiorb span:nth-child(3){inset:23px;border-top-color:var(--do)}
+.aiorb.spin span{animation:aispin 1s linear infinite}
+.aiorb.spin span:nth-child(2){animation-direction:reverse;animation-duration:1.3s}
+.aiorb.phase-read{box-shadow:0 0 0 4px rgba(37,99,235,.15)}
+.aiorb.phase-think{box-shadow:0 0 0 4px rgba(124,58,237,.15)}
+.aiorb.phase-decide{box-shadow:0 0 0 4px rgba(194,130,10,.15)}
+.aiorb.phase-do{box-shadow:0 0 0 4px rgba(22,163,74,.15)}
+@keyframes aispin{to{transform:rotate(360deg)}}
+.aiphases{display:flex;flex-wrap:wrap;gap:5px;justify-content:center}
+.aiphases span{font-size:10.5px;font-weight:600;color:var(--mut);background:#f1f5f9;border-radius:999px;padding:2px 8px;transition:.2s}
+.aiphases span[data-phase="read"].on{color:#fff;background:var(--read)}
+.aiphases span[data-phase="think"].on{color:#fff;background:var(--think)}
+.aiphases span[data-phase="decide"].on{color:#fff;background:var(--decide)}
+.aiphases span[data-phase="do"].on{color:#fff;background:var(--do)}
+.aistream{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px;max-height:440px;overflow:auto}
+.aiempty{color:var(--mut);font-size:13px;padding:18px 0;text-align:center}
+.aiev{border:1px solid var(--line);border-left:3px solid var(--gray);border-radius:10px;padding:10px 12px;background:#fff}
+.aiev.ok{border-left-color:var(--do)}.aiev.err{border-left-color:var(--red)}.aiev.pending{border-left-color:var(--amber)}
+.aiev.fresh{animation:aiflash .9s ease-out}
+@keyframes aiflash{0%{background:#eff6ff;transform:translateY(-4px)}100%{background:#fff;transform:none}}
+.aiev-h{display:flex;align-items:center;gap:8px;font-size:13.5px}
+.aiev-h b{flex:1;font-weight:650}
+.aiev-h time{color:var(--mut);font-size:11.5px;white-space:nowrap}
+.aibadge{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;font-size:11px;font-weight:800;color:#fff;background:var(--gray)}
+.aibadge.ok{background:var(--do)}.aibadge.err{background:var(--red)}.aibadge.pending{background:var(--amber);color:#3a2b06}
+.aiev-steps{margin-top:8px;display:flex;flex-direction:column;gap:4px;padding-left:2px}
+.aistep{display:flex;align-items:flex-start;gap:8px;font-size:12.5px;color:var(--ink);opacity:0;transform:translateY(3px);transition:opacity .35s,transform .35s}
+.aistep.show{opacity:1;transform:none}
+.aistep i{margin-top:5px;width:7px;height:7px;border-radius:50%;background:var(--gray);flex:none}
+.aistep[data-phase="read"] i{background:var(--read)}
+.aistep[data-phase="think"] i{background:var(--think)}
+.aistep[data-phase="decide"] i{background:var(--decide)}
+.aistep[data-phase="do"] i{background:var(--do)}
+.aiev-f{margin-top:6px;padding-left:15px}
 </style><?php }

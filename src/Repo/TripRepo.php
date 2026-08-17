@@ -26,9 +26,15 @@ final class TripRepo
         return Db::one("SELECT * FROM leon_trips WHERE trip_number = ? ORDER BY start_date DESC LIMIT 1", [$tripNumber]);
     }
 
+    /** The trip fields a re-import compares to decide if a row actually changed. */
+    private const CONTENT_FIELDS = ['client_name', 'aircraft', 'route', 'start_date', 'end_date', 'flights_count', 'currency'];
+
     /**
      * Insert or update the trip's metadata (never touches the xero_* columns).
-     * Returns [$row, $wasNew].
+     * Re-importing a file only re-files the rows that actually changed: an existing
+     * trip whose content matches is left untouched (its updated_at does not move),
+     * so uploading a fresh LEON export "moves" only the records that need it.
+     * Returns [$row, $status] where $status is 'new' | 'updated' | 'unchanged'.
      */
     public static function upsert(array $trip, string $entity, string $sourceFile): array
     {
@@ -47,13 +53,25 @@ final class TripRepo
         ];
 
         if ($existing) {
+            if (!self::contentChanged($existing, $fields)) {
+                return [$existing, 'unchanged'];         // same data → don't re-file it
+            }
             $set = implode(',', array_map(fn($c) => "{$c}=:{$c}", array_keys($fields)));
             $fields['__id'] = (int)$existing['id'];
             Db::q("UPDATE leon_trips SET {$set}, updated_at=CURRENT_TIMESTAMP WHERE id=:__id", $fields);
-            return [self::find((string)$trip['trip_number'], $entity), false];
+            return [self::find((string)$trip['trip_number'], $entity), 'updated'];
         }
         Db::insert('leon_trips', $fields);
-        return [self::find((string)$trip['trip_number'], $entity), true];
+        return [self::find((string)$trip['trip_number'], $entity), 'new'];
+    }
+
+    /** True if any content field differs between the stored row and the incoming one. */
+    private static function contentChanged(array $existing, array $incoming): bool
+    {
+        foreach (self::CONTENT_FIELDS as $f) {
+            if ((string)($existing[$f] ?? '') !== (string)($incoming[$f] ?? '')) return true;
+        }
+        return false;
     }
 
     /** Full master list, newest trips first. */

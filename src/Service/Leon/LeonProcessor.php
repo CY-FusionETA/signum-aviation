@@ -22,11 +22,11 @@ final class LeonProcessor
         $source   = basename($absPath);
 
         $trips = [];
-        $summary = ['parsed' => count($parsed['trips']), 'new' => 0, 'updated' => 0, 'source' => $parsed['source']];
+        $summary = ['parsed' => count($parsed['trips']), 'new' => 0, 'updated' => 0, 'unchanged' => 0, 'source' => $parsed['source']];
         foreach ($parsed['trips'] as $t) {
             $t['currency'] = $currency;
-            [$row, $wasNew] = TripRepo::upsert($t, $entity, $source);
-            $summary[$wasNew ? 'new' : 'updated']++;
+            [$row, $status] = TripRepo::upsert($t, $entity, $source);
+            $summary[$status]++;                          // new | updated | unchanged
             $trips[] = $row;
         }
         return ['summary' => $summary, 'trips' => $trips, 'source' => $parsed['source']];
