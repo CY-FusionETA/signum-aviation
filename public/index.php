@@ -602,6 +602,7 @@ function render_home(string $view): void {
     <script><?= app_js() ?></script>
     <script><?= dz_js() ?></script>
     <script><?= ai_js() ?></script>
+    <script><?= dash_js() ?></script>
     </body></html><?php
 }
 
@@ -748,28 +749,85 @@ function render_dashboard(array $stat, array $rows, bool $connected, string $ten
     $costPill = fn(string $c) => $c === 'ready'
         ? '<span class="pill green">Ready</span>'
         : ($c === 'partial' ? '<span class="pill amber">Partial</span>' : '<span class="pill gray">None</span>');
-    ?>
-    <p class="lede">Every trip, its supplier bills and its billing status — in one place. Data flows in from <b>LEON</b>, <b>Gmail</b> and <b>Xero</b>; nothing re-keyed.</p>
 
-    <section class="tiles">
-      <div class="tile"><div class="tnum"><?= $stat['total'] ?></div><div class="tlbl">Trips in master list</div></div>
-      <div class="tile"><div class="tnum blue"><?= $stat['matched'] ?></div><div class="tlbl">Matched to bills<?= $connected ? ' · '.e($tenant) : '' ?></div></div>
-      <div class="tile"><div class="tnum green"><?= $stat['ready'] ?></div><div class="tlbl">Ready to invoice</div></div>
-      <div class="tile"><div class="tnum"><?= $stat['inc'] ?> <span class="tmini">Inc</span> / <?= $stat['ltd'] ?> <span class="tmini">Ltd</span></div><div class="tlbl">By entity</div></div>
+    // Share-of-total for the deck bars and the pipeline conversion rates.
+    $total  = max(0, (int)$stat['total']);
+    $share  = fn(int $n) => $total > 0 ? (int)round($n * 100 / $total) : 0;
+    $mPct   = $share((int)$stat['matched']);
+    $rPct   = $share((int)$stat['ready']);
+    $incPct = $share((int)$stat['inc']);
+    ?>
+    <div class="dash">
+
+    <!-- Command deck: the headline numbers, read as instrument telemetry. -->
+    <section class="deck">
+      <span class="deckgrid" aria-hidden="true"></span>
+      <span class="deckglow" aria-hidden="true"></span>
+      <span class="deckscan" aria-hidden="true"></span>
+      <div class="deckbody">
+        <div class="deckintro">
+          <span class="eyebrow"><span class="ebdot"></span>Autonomous billing loop · live</span>
+          <h2>Every trip, every supplier bill, every client invoice — reconciled without re-keying.</h2>
+          <p>LEON files the trips. Gmail feeds the supplier invoices. Xero receives the bills and the recharge. Unidash runs the loop and shows its work.</p>
+          <div class="deckchips">
+            <span class="dchip on"><i></i>LEON</span>
+            <span class="dchip on"><i></i>Gmail</span>
+            <span class="dchip <?= $connected ? 'on' : 'off' ?>"><i></i>Xero<?= $connected ? ' · '.e($tenant) : ' · offline' ?></span>
+          </div>
+        </div>
+        <div class="readouts">
+          <div class="ro cy">
+            <div class="rolbl">Trips in master list</div>
+            <div class="ronum" data-count="<?= $total ?>">0</div>
+            <div class="robar"><i style="width:100%"></i></div>
+            <div class="rofoot">from LEON Flight Count</div>
+          </div>
+          <div class="ro vi">
+            <div class="rolbl">Matched to bills</div>
+            <div class="ronum" data-count="<?= (int)$stat['matched'] ?>">0</div>
+            <div class="robar"><i style="width:<?= $mPct ?>%"></i></div>
+            <div class="rofoot"><?= $mPct ?>% of trips<?= $connected ? ' · '.e($tenant) : '' ?></div>
+          </div>
+          <div class="ro em">
+            <div class="rolbl">Ready to invoice</div>
+            <div class="ronum" data-count="<?= (int)$stat['ready'] ?>">0</div>
+            <div class="robar"><i style="width:<?= $rPct ?>%"></i></div>
+            <div class="rofoot"><?= $rPct ?>% fully costed</div>
+          </div>
+          <div class="ro am">
+            <div class="rolbl">By entity</div>
+            <div class="ronum split"><span data-count="<?= (int)$stat['inc'] ?>">0</span><small>INC</small><b>/</b><span data-count="<?= (int)$stat['ltd'] ?>">0</span><small>LTD</small></div>
+            <div class="robar dual"><i style="width:<?= $incPct ?>%"></i></div>
+            <div class="rofoot">Inc <?= $incPct ?>% · Ltd <?= 100 - $incPct ?>%</div>
+          </div>
+        </div>
+      </div>
     </section>
 
-    <section class="card aiwork" id="aiwork">
+    <!-- The assistant's own console: reactor, phase rail, reasoning stream. -->
+    <section class="card aiwork console" id="aiwork">
       <div class="chead">
         <h2><span class="aidot" id="aidot"></span> AI at work</h2>
         <div class="aiactions">
           <span class="aistate watching" id="aistate">Watching</span>
-          <button class="btn ghost sm" type="button" id="aisim" title="Play a demo of how the assistant reads, reasons and acts on an invoice">▷ Simulate</button>
+          <button class="btn ghost sm simbtn" type="button" id="aisim" title="Play a demo of how the assistant reads, reasons and acts on an invoice">▷ Simulate</button>
         </div>
       </div>
-      <p class="muted ailede">This is what the assistant is doing behind the scenes — every supplier invoice it reads, the call it makes, and each LEON trip it files. It moves on its own as work comes in; press <b>Simulate</b> to watch one run start to finish.</p>
+      <p class="ailede">This is what the assistant is doing behind the scenes — every supplier invoice it reads, the call it makes, and each LEON trip it files. It moves on its own as work comes in; press <b>Simulate</b> to watch one run start to finish.</p>
+
+      <div class="aicounts" id="aicounts">
+        <div class="aic"><b data-pulse="sent">—</b><em>delivered · 24h</em></div>
+        <div class="aic ok"><b data-pulse="bills">—</b><em>bills created</em></div>
+        <div class="aic tr"><b data-pulse="trips">—</b><em>trips filed</em></div>
+        <div class="aic er"><b data-pulse="errors">—</b><em>need review</em></div>
+      </div>
+
       <div class="aigrid">
         <div class="aibrain" aria-hidden="true">
-          <div class="aiorb" id="aiorb"><span></span><span></span><span></span><i>AI</i></div>
+          <div class="reactor">
+            <span class="rring r1"></span><span class="rring r2"></span><span class="rring r3"></span>
+            <div class="aiorb" id="aiorb"><span></span><span></span><span></span><i>AI</i></div>
+          </div>
           <div class="aiphases" id="aiphases">
             <span data-phase="read">Read</span>
             <span data-phase="think">Think</span>
@@ -783,14 +841,27 @@ function render_dashboard(array $stat, array $rows, bool $connected, string $ten
       </div>
     </section>
 
-    <section class="card">
-      <div class="chead"><h2>Billing pipeline</h2><span class="muted">trip → supplier bill → client invoice</span></div>
-      <div class="pipe">
-        <div class="pstep"><div class="pn"><?= $stat['total'] ?></div><div class="pl">Trips</div></div>
-        <div class="parrow">→</div>
-        <div class="pstep"><div class="pn blue"><?= $stat['matched'] ?></div><div class="pl">Matched to bills</div></div>
-        <div class="parrow">→</div>
-        <div class="pstep"><div class="pn green"><?= $stat['ready'] ?></div><div class="pl">Ready to invoice</div></div>
+    <section class="card flowcard">
+      <div class="chead"><h2>Billing pipeline</h2><span class="dim mono">trip → supplier bill → client invoice</span></div>
+      <div class="flow">
+        <div class="fnode">
+          <span class="fic cy"><?= icon('trips') ?></span>
+          <div class="fn" data-count="<?= $total ?>">0</div><div class="fl">Trips</div>
+        </div>
+        <div class="fwire"><i></i></div>
+        <div class="fnode">
+          <span class="fic vi"><?= icon('bills') ?></span>
+          <div class="fn" data-count="<?= (int)$stat['matched'] ?>">0</div><div class="fl">Matched to bills</div>
+        </div>
+        <div class="fwire"><i></i></div>
+        <div class="fnode">
+          <span class="fic em"><?= icon('invoice') ?></span>
+          <div class="fn" data-count="<?= (int)$stat['ready'] ?>">0</div><div class="fl">Ready to invoice</div>
+        </div>
+      </div>
+      <div class="frates">
+        <div class="frate"><span>Matched</span><div class="fbar"><i class="vi" style="width:<?= $mPct ?>%"></i></div><b><?= $mPct ?>%</b></div>
+        <div class="frate"><span>Ready to invoice</span><div class="fbar"><i class="em" style="width:<?= $rPct ?>%"></i></div><b><?= $rPct ?>%</b></div>
       </div>
     </section>
 
@@ -828,11 +899,13 @@ function render_dashboard(array $stat, array $rows, bool $connected, string $ten
         </section>
         <section class="card">
           <div class="chead"><h2>Data sources</h2></div>
-          <div class="src"><span class="sdot on"></span><b>LEON</b><span class="muted">Flight Count → trip master list</span></div>
-          <div class="src"><span class="sdot on"></span><b>Gmail</b><span class="muted">supplier invoices → Xero</span></div>
-          <div class="src"><span class="sdot <?= $connected?'on':'off' ?>"></span><b>Xero</b><span class="muted"><?= $connected ? e($tenant) : 'not connected' ?></span></div>
+          <div class="src"><span class="sig on"><i></i><i></i><i></i></span><b>LEON</b><span class="dim">Flight Count → trip master list</span></div>
+          <div class="src"><span class="sig on"><i></i><i></i><i></i></span><b>Gmail</b><span class="dim">supplier invoices → Xero</span></div>
+          <div class="src"><span class="sig <?= $connected?'on':'off' ?>"><i></i><i></i><i></i></span><b>Xero</b><span class="dim"><?= $connected ? e($tenant) : 'not connected' ?></span></div>
         </section>
       </div>
+    </div>
+
     </div>
     <?php
 }
@@ -1381,6 +1454,9 @@ function ai_js(): string {
   const phasesEl = document.getElementById('aiphases');
   const orbEl    = document.getElementById('aiorb');
   const simBtn   = document.getElementById('aisim');
+  const countsBox = document.getElementById('aicounts');
+  const counts = {};
+  document.querySelectorAll('#aicounts [data-pulse]').forEach(el => { counts[el.dataset.pulse] = el; });
   const ICON = {ok:'✓', err:'!', pending:'…'};
   let seen = null, busy = false;
 
@@ -1408,6 +1484,21 @@ function ai_js(): string {
       + (ev.steps||[]).map(s=>'<div class="aistep" data-phase="'+esc(s.phase)+'"><i></i><span>'+esc(s.text)+'</span></div>').join('')
       + '</div>' + link;
     return li;
+  }
+
+  // Today's tallies, straight from the pulse — the panel's live scoreboard.
+  function setCounts(pulse){
+    const t = pulse && pulse.today; if(!t) return;
+    for(const k in counts){
+      if(t[k] == null) continue;
+      const el = counts[k], v = String(t[k]);
+      if(el.textContent !== v){
+        el.textContent = v;
+        el.classList.remove('bump'); void el.offsetWidth; el.classList.add('bump');
+      }
+      if(k === 'errors') el.parentElement.classList.toggle('zero', Number(t[k]) === 0);
+    }
+    if(countsBox) countsBox.classList.add('live');
   }
 
   function setWorking(on){
@@ -1463,6 +1554,7 @@ function ai_js(): string {
       data = await r.json();
     } catch(e){ return; }
     const events = data.events || [];
+    setCounts(data.pulse);
     if(seen === null){ renderList(events); seen = events.length?key(events[0]):''; setWorking(!!(data.pulse&&data.pulse.active)); return; }
     let idx = events.findIndex(e=>key(e)===seen);
     if(idx === -1) idx = Math.min(events.length, 3);
@@ -1502,6 +1594,27 @@ function ai_js(): string {
   simBtn.addEventListener('click', simulate);
   poll();
   setInterval(poll, 4000);
+})();
+JS;
+}
+
+function dash_js(): string {
+    return <<<'JS'
+(function(){
+  // Roll the deck and pipeline figures up from zero — the numbers are already
+  // in the markup, so this is decoration only and degrades to the final value.
+  const root = document.querySelector('.dash'); if(!root) return;
+  const still = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  root.querySelectorAll('[data-count]').forEach(el => {
+    const to = parseInt(el.dataset.count, 10) || 0;
+    if(still || to === 0){ el.textContent = String(to); return; }
+    const t0 = performance.now(), dur = 850;
+    requestAnimationFrame(function step(t){
+      const p = Math.min(1, (t - t0) / dur);
+      el.textContent = String(Math.round(to * (1 - Math.pow(1 - p, 3))));
+      if(p < 1) requestAnimationFrame(step);
+    });
+  });
 })();
 JS;
 }
@@ -1749,4 +1862,232 @@ body.login{display:flex;align-items:center;justify-content:center;min-height:100
 .aistep[data-phase="decide"] i{background:var(--decide)}
 .aistep[data-phase="do"] i{background:var(--do)}
 .aiev-f{margin-top:6px;padding-left:15px}
+
+/* ==== Dashboard: flight-deck skin ===================================
+   Scoped to .dash so the rest of the app keeps its light, plain chrome.
+   The deck and the AI console are dark instrument panels; the cards
+   below them stay light so the data is still easy to read. */
+.dash{--cy:#22d3ee;--vi:#a78bfa;--em:#34d399;--am:#fbbf24;--deep:#0b132d}
+.dash .dim{color:var(--mut);font-size:12px}
+.dash .card>.chead h2{font-size:14px}
+
+/* --- command deck --- */
+.deck{position:relative;overflow:hidden;border-radius:16px;padding:26px 28px;margin-bottom:16px;color:#e6ecff;
+  background:linear-gradient(135deg,#070d1f 0%,#0c1631 48%,#101d44 100%);
+  border:1px solid rgba(120,150,255,.22);
+  box-shadow:0 18px 44px -24px rgba(10,20,60,.9),inset 0 1px 0 rgba(255,255,255,.05)}
+.deckgrid{position:absolute;inset:-2px;pointer-events:none;
+  background-image:linear-gradient(rgba(120,160,255,.085) 1px,transparent 1px),linear-gradient(90deg,rgba(120,160,255,.085) 1px,transparent 1px);
+  background-size:44px 44px;
+  -webkit-mask-image:radial-gradient(125% 115% at 10% -5%,#000 32%,transparent 76%);
+  mask-image:radial-gradient(125% 115% at 10% -5%,#000 32%,transparent 76%);
+  animation:gridflow 20s linear infinite}
+@keyframes gridflow{to{background-position:44px 44px,44px 44px}}
+.deckglow{position:absolute;width:540px;height:540px;right:-150px;top:-270px;border-radius:50%;pointer-events:none;
+  background:radial-gradient(circle,rgba(56,189,248,.26),rgba(139,92,246,.13) 46%,transparent 70%);
+  animation:glowdrift 13s ease-in-out infinite alternate}
+@keyframes glowdrift{to{transform:translate3d(-46px,34px,0) scale(1.14)}}
+.deckscan{position:absolute;left:0;right:0;top:0;height:140px;pointer-events:none;
+  background:linear-gradient(180deg,transparent,rgba(125,205,255,.09),transparent);
+  animation:deckscan 7.5s linear infinite}
+@keyframes deckscan{0%{transform:translateY(-160px)}100%{transform:translateY(560px)}}
+.deckbody{position:relative;display:grid;grid-template-columns:minmax(270px,1fr) minmax(330px,1.3fr);gap:26px;align-items:center}
+@media(max-width:1040px){.deckbody{grid-template-columns:1fr;gap:22px}}
+
+.eyebrow{display:inline-flex;align-items:center;gap:8px;padding:6px 11px;border-radius:999px;
+  font:600 10.5px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.16em;text-transform:uppercase;
+  color:#7fdcf5;background:rgba(34,211,238,.10);border:1px solid rgba(34,211,238,.28)}
+.ebdot{width:6px;height:6px;border-radius:50%;background:var(--cy);animation:ebpulse 2s ease-out infinite}
+@keyframes ebpulse{0%{box-shadow:0 0 0 0 rgba(34,211,238,.6)}70%{box-shadow:0 0 0 7px rgba(34,211,238,0)}100%{box-shadow:0 0 0 0 rgba(34,211,238,0)}}
+.deckintro h2{margin:14px 0 9px;font-size:23px;line-height:1.3;letter-spacing:-.3px;font-weight:700;color:#fff;max-width:26ch}
+.deckintro p{margin:0;font-size:13.5px;line-height:1.6;color:#93a4d4;max-width:48ch}
+.deckchips{display:flex;flex-wrap:wrap;gap:8px;margin-top:17px}
+.dchip{display:inline-flex;align-items:center;gap:7px;padding:6px 11px;border-radius:8px;
+  font:600 11.5px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.03em;color:#c4d1f5;
+  background:rgba(255,255,255,.05);border:1px solid rgba(150,175,255,.18)}
+.dchip i{width:6px;height:6px;border-radius:50%;background:#64748b;flex:none}
+.dchip.on i{background:var(--em);box-shadow:0 0 8px rgba(52,211,153,.9)}
+.dchip.off i{background:var(--am);box-shadow:0 0 8px rgba(251,191,36,.8)}
+
+.readouts{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+@media(max-width:1040px){.readouts{grid-template-columns:repeat(4,1fr)}}
+@media(max-width:820px){.readouts{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:460px){.readouts{grid-template-columns:1fr}}
+.ro{position:relative;overflow:hidden;padding:13px 14px 12px;border-radius:12px;
+  background:rgba(8,15,36,.55);border:1px solid rgba(130,160,255,.16)}
+.ro:before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--rc);box-shadow:0 0 12px var(--rc)}
+.ro.cy{--rc:#22d3ee}.ro.vi{--rc:#a78bfa}.ro.em{--rc:#34d399}.ro.am{--rc:#fbbf24}
+.rolbl{min-height:2.5em;font:600 10px/1.25 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.13em;text-transform:uppercase;color:#7f90c0}
+.ronum{margin:8px 0 10px;font:700 30px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:-1px;color:#fff}
+.ronum.split{display:flex;align-items:baseline;gap:5px;font-size:20px}
+.ronum.split small{font:600 9.5px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.1em;color:#7f90c0}
+.ronum.split b{font-weight:400;color:#44507a}
+.robar{height:3px;border-radius:3px;background:rgba(140,165,255,.14);overflow:hidden}
+.robar.dual{background:rgba(167,139,250,.5)}
+.robar i{display:block;height:100%;border-radius:3px;background:var(--rc);box-shadow:0 0 10px var(--rc);
+  transform-origin:left;animation:bargrow 1.1s cubic-bezier(.2,.8,.25,1) both}
+@keyframes bargrow{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+.rofoot{margin-top:8px;font-size:11px;color:#7d8cba}
+
+/* --- AI console (dark) --- */
+.dash .console{--read:#38bdf8;--think:#a78bfa;--decide:#fbbf24;--do:#34d399;
+  position:relative;overflow:hidden;color:#dbe4ff;padding:18px;
+  border:1px solid rgba(120,150,255,.2);border-radius:14px;
+  background:linear-gradient(170deg,#080e22 0%,#0b1430 58%,#0d1836 100%);
+  box-shadow:0 16px 40px -26px rgba(10,20,60,.9)}
+.dash .console:before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:linear-gradient(rgba(120,160,255,.05) 1px,transparent 1px),linear-gradient(90deg,rgba(120,160,255,.05) 1px,transparent 1px);
+  background-size:36px 36px;
+  -webkit-mask-image:radial-gradient(95% 85% at 50% -10%,#000 28%,transparent 74%);
+  mask-image:radial-gradient(95% 85% at 50% -10%,#000 28%,transparent 74%)}
+.dash .console>*{position:relative}
+.dash .console .chead{align-items:center;flex-wrap:wrap;gap:10px}
+.dash .console .chead h2{color:#fff;white-space:nowrap}
+.dash .console .aidot{background:#475569;box-shadow:none}
+.dash .console.working .aidot{background:var(--em)}
+.dash .console .ailede{margin:2px 0 15px;font-size:12.8px;line-height:1.6;color:#8b9cca;max-width:82ch}
+.dash .console .aistate{padding:6px 11px;font:600 10.5px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.12em;text-transform:uppercase;border:1px solid transparent}
+.dash .console .aistate.watching{color:#8fa2d4;background:rgba(255,255,255,.05);border-color:rgba(150,175,255,.18)}
+.dash .console .aistate.working{color:#6ff0b8;background:rgba(52,211,153,.14);border-color:rgba(52,211,153,.4)}
+.dash .console .simbtn{padding:7px 13px;border-radius:9px;font-weight:600;
+  color:#cfd9ff;background:rgba(255,255,255,.06);border:1px solid rgba(150,175,255,.25)}
+.dash .console .simbtn:hover{color:#fff;background:rgba(56,189,248,.16);border-color:rgba(56,189,248,.5)}
+.dash .console .simbtn:disabled{opacity:.45;cursor:default}
+
+.aicounts{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:0 0 16px}
+@media(max-width:640px){.aicounts{grid-template-columns:repeat(2,1fr)}}
+.aic{display:flex;flex-direction:column;gap:4px;padding:10px 12px;border-radius:10px;
+  background:rgba(255,255,255,.035);border:1px solid rgba(140,165,255,.14)}
+.aic b{display:inline-block;font:700 19px/1 ui-monospace,SFMono-Regular,Menlo,monospace;color:#e8eeff}
+.aic em{font:600 9.5px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;font-style:normal;letter-spacing:.12em;text-transform:uppercase;color:#7f90c0}
+.aic.ok b{color:var(--em)}.aic.tr b{color:var(--read)}.aic.er b{color:#f87171}
+.aic.er.zero b{color:#5b688f}
+.aicounts:not(.live) b{color:#5b688f}   /* the "—" placeholder, until the first poll lands */
+.aic b.bump{animation:aicbump .55s ease-out}
+@keyframes aicbump{0%{transform:scale(1)}35%{transform:scale(1.24)}100%{transform:scale(1)}}
+
+.dash .console .aigrid{grid-template-columns:152px 1fr;gap:22px}
+@media(max-width:640px){.dash .console .aigrid{grid-template-columns:1fr}}
+.dash .console .aibrain{gap:16px}
+.reactor{position:relative;width:118px;height:118px;display:grid;place-items:center;flex:none}
+.rring{position:absolute;border-radius:50%;border:1px solid rgba(140,175,255,.13)}
+.rring.r1{inset:0;border-top-color:rgba(56,189,248,.6);animation:rspin 9s linear infinite}
+.rring.r1:after{content:"";position:absolute;top:-3px;left:50%;width:5px;height:5px;margin-left:-2.5px;border-radius:50%;background:var(--read);box-shadow:0 0 10px var(--read)}
+.rring.r2{inset:11px;border-right-color:rgba(167,139,250,.55);animation:rspin 6.5s linear infinite reverse}
+.rring.r3{inset:22px;border-bottom-color:rgba(52,211,153,.5);animation:rspin 12s linear infinite}
+@keyframes rspin{to{transform:rotate(360deg)}}
+.dash .console .aiorb{width:72px;height:72px;border:1px solid rgba(140,175,255,.3);
+  background:radial-gradient(circle at 50% 34%,rgba(56,189,248,.32),rgba(10,18,44,.95) 66%)}
+.dash .console .aiorb i{color:#e2f3ff;font-size:13px;text-shadow:0 0 12px rgba(56,189,248,.9)}
+.dash .console .aiorb:after{content:"";position:absolute;inset:-7px;border-radius:50%;
+  border:1px solid rgba(56,189,248,.28);animation:orbbreath 3.2s ease-in-out infinite}
+@keyframes orbbreath{0%,100%{transform:scale(1);opacity:.6}50%{transform:scale(1.1);opacity:.12}}
+.dash .console .aiorb.phase-read{box-shadow:0 0 0 4px rgba(56,189,248,.14),0 0 28px rgba(56,189,248,.45)}
+.dash .console .aiorb.phase-think{box-shadow:0 0 0 4px rgba(167,139,250,.14),0 0 28px rgba(167,139,250,.45)}
+.dash .console .aiorb.phase-decide{box-shadow:0 0 0 4px rgba(251,191,36,.14),0 0 28px rgba(251,191,36,.42)}
+.dash .console .aiorb.phase-do{box-shadow:0 0 0 4px rgba(52,211,153,.14),0 0 28px rgba(52,211,153,.45)}
+
+/* phase rail — four beats on a lit thread */
+.dash .console .aiphases{position:relative;flex-direction:column;align-items:stretch;gap:7px;width:100%;padding-left:15px}
+.dash .console .aiphases:before{content:"";position:absolute;left:4px;top:9px;bottom:9px;width:1px;
+  background:linear-gradient(180deg,rgba(56,189,248,.55),rgba(167,139,250,.55),rgba(251,191,36,.55),rgba(52,211,153,.55))}
+.dash .console .aiphases span{position:relative;text-align:left;padding:6px 9px;border-radius:7px;
+  font:600 10px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.13em;text-transform:uppercase;
+  color:#8394c4;background:rgba(255,255,255,.04);border:1px solid rgba(140,165,255,.13)}
+.dash .console .aiphases span:before{content:"";position:absolute;left:-15px;top:50%;margin-top:-3px;width:6px;height:6px;border-radius:50%;background:#334166}
+.dash .console .aiphases span[data-phase="read"].on{color:#06243a;background:var(--read);box-shadow:0 0 18px rgba(56,189,248,.5)}
+.dash .console .aiphases span[data-phase="think"].on{color:#1e1046;background:var(--think);box-shadow:0 0 18px rgba(167,139,250,.5)}
+.dash .console .aiphases span[data-phase="decide"].on{color:#3a2b06;background:var(--decide);box-shadow:0 0 18px rgba(251,191,36,.5)}
+.dash .console .aiphases span[data-phase="do"].on{color:#04301f;background:var(--do);box-shadow:0 0 18px rgba(52,211,153,.5)}
+.dash .console .aiphases span.on:before{background:currentColor}
+@media(max-width:640px){
+  .dash .console .aibrain{flex-direction:row!important;align-items:center;gap:18px}
+  .dash .console .aiphases{width:auto;flex:1;padding-left:15px}
+}
+
+/* reasoning stream — terminal cards */
+.dash .console .aistream{max-height:470px;gap:9px;padding-right:4px}
+.dash .console .aistream::-webkit-scrollbar{width:6px}
+.dash .console .aistream::-webkit-scrollbar-thumb{background:rgba(140,175,255,.22);border-radius:6px}
+.dash .console .aiempty{color:#7183b4;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;letter-spacing:.06em}
+.dash .console .aiev{padding:11px 13px;border-radius:10px;background:rgba(255,255,255,.035);
+  border:1px solid rgba(140,165,255,.13);border-left:2px solid #475569;
+  transition:background .2s,border-color .2s,transform .2s}
+.dash .console .aiev:hover{background:rgba(255,255,255,.06);border-color:rgba(140,165,255,.28);transform:translateX(2px)}
+.dash .console .aiev.ok{border-left-color:var(--do)}
+.dash .console .aiev.err{border-left-color:#f87171}
+.dash .console .aiev.pending{border-left-color:var(--decide)}
+.dash .console .aiev-h b{color:#eaf0ff;font-weight:600}
+.dash .console .aiev-h time{color:#7183b4;font:600 10.5px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.06em;text-transform:uppercase}
+.dash .console .aibadge{background:#475569;font-size:10.5px}
+.dash .console .aibadge.ok{background:var(--do);color:#04301f}
+.dash .console .aibadge.err{background:#f87171;color:#3d0b0b}
+.dash .console .aibadge.pending{background:var(--decide);color:#3a2b06}
+.dash .console .aiev-steps{position:relative;padding-left:0;margin-top:9px;gap:6px}
+.dash .console .aiev-steps:before{content:"";position:absolute;left:3px;top:10px;bottom:10px;width:1px;background:rgba(140,175,255,.32)}
+.dash .console .aistep{color:#a9b7de;font-size:12.4px}
+.dash .console .aistep i{position:relative;z-index:1;background:#475569;box-shadow:0 0 0 3px var(--deep)}
+.dash .console .aistep[data-phase="read"] i{background:var(--read);box-shadow:0 0 0 3px var(--deep),0 0 9px var(--read)}
+.dash .console .aistep[data-phase="think"] i{background:var(--think);box-shadow:0 0 0 3px var(--deep),0 0 9px var(--think)}
+.dash .console .aistep[data-phase="decide"] i{background:var(--decide);box-shadow:0 0 0 3px var(--deep),0 0 9px var(--decide)}
+.dash .console .aistep[data-phase="do"] i{background:var(--do);box-shadow:0 0 0 3px var(--deep),0 0 9px var(--do)}
+.dash .console .aiev-f{padding-left:15px}
+.dash .console .aiev-f a{color:#5cc9f5}
+.dash .console .aiev.fresh{animation:aiflashd 1s ease-out}
+@keyframes aiflashd{
+  0%{background:rgba(56,189,248,.2);transform:translateY(-6px);box-shadow:0 0 26px rgba(56,189,248,.28)}
+  100%{background:rgba(255,255,255,.035);transform:none;box-shadow:none}}
+
+/* --- billing pipeline --- */
+.flowcard .flow{display:flex;align-items:stretch}
+.fnode{position:relative;flex:1;overflow:hidden;padding:15px 12px;text-align:center;border-radius:12px;
+  background:linear-gradient(180deg,#fcfdff,#f2f5fc);border:1px solid var(--line)}
+.fnode:before{content:"";position:absolute;left:0;right:0;top:0;height:2px;
+  background:linear-gradient(90deg,transparent,var(--nc,#2563eb),transparent)}
+.fnode:nth-child(1){--nc:#06b6d4}.fnode:nth-child(3){--nc:#7c3aed}.fnode:nth-child(5){--nc:#059669}
+.fic{display:inline-grid;place-items:center;width:32px;height:32px;border-radius:9px;margin-bottom:9px}
+.fic.cy{color:#0891b2;background:#ecfeff;border:1px solid #a5f3fc}
+.fic.vi{color:#7c3aed;background:#f5f3ff;border:1px solid #ddd6fe}
+.fic.em{color:#059669;background:#ecfdf5;border:1px solid #a7f3d0}
+.fn{font:700 24px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:-.6px}
+.fl{margin-top:5px;font:600 10px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.11em;text-transform:uppercase;color:var(--mut)}
+.fwire{position:relative;flex:0 0 64px;align-self:center;height:2px;
+  background:repeating-linear-gradient(90deg,#cbd5e1 0 6px,transparent 6px 12px)}
+.fwire i{position:absolute;top:-3px;left:0;width:8px;height:8px;border-radius:50%;
+  background:#2563eb;box-shadow:0 0 10px rgba(37,99,235,.85);animation:fwtravel 2.8s ease-in-out infinite}
+.flow>div:nth-child(4) i{animation-delay:1.4s}
+@keyframes fwtravel{0%{left:-4px;opacity:0}14%{opacity:1}86%{opacity:1}100%{left:calc(100% - 4px);opacity:0}}
+@media(max-width:700px){
+  .flowcard .flow{flex-direction:column}
+  .fwire{flex:0 0 26px;width:2px;height:26px;margin:0 auto;
+    background:repeating-linear-gradient(180deg,#cbd5e1 0 6px,transparent 6px 12px)}
+  .fwire i{display:none}
+}
+.frates{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:15px;padding-top:14px;border-top:1px dashed var(--line)}
+@media(max-width:640px){.frates{grid-template-columns:1fr}}
+.frate{display:flex;align-items:center;gap:10px}
+.frate>span{flex:0 0 120px;font:600 10px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.12em;text-transform:uppercase;color:var(--mut)}
+.fbar{flex:1;height:6px;border-radius:6px;background:#eef1f8;overflow:hidden}
+.fbar i{display:block;height:100%;border-radius:6px;transform-origin:left;animation:bargrow 1.2s cubic-bezier(.2,.8,.25,1) both}
+.fbar i.vi{background:linear-gradient(90deg,#a78bfa,#7c3aed)}
+.fbar i.em{background:linear-gradient(90deg,#34d399,#059669)}
+.frate b{flex:0 0 42px;text-align:right;font:700 13px/1 ui-monospace,SFMono-Regular,Menlo,monospace}
+
+/* --- bottom cards: light, with tech accents --- */
+.dash table.grid thead th{font:600 10px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.11em;text-transform:uppercase}
+.dash .src{transition:background .15s;border-radius:8px;padding-left:8px;padding-right:8px;margin:0 -8px}
+.dash .src:hover{background:#f7f9ff}
+.dash .src .dim{margin-left:auto}
+.sig{display:inline-flex;align-items:flex-end;gap:2px;height:12px;flex:none}
+.sig i{width:3px;border-radius:1px;background:#cbd5e1}
+.sig i:nth-child(1){height:5px}.sig i:nth-child(2){height:8px}.sig i:nth-child(3){height:12px}
+.sig.on i{background:var(--green)}
+.sig.on i:nth-child(1){animation:sigpulse 1.7s ease-in-out infinite}
+.sig.on i:nth-child(2){animation:sigpulse 1.7s ease-in-out .22s infinite}
+.sig.on i:nth-child(3){animation:sigpulse 1.7s ease-in-out .44s infinite}
+@keyframes sigpulse{0%,100%{opacity:.4}50%{opacity:1}}
+
+@media(prefers-reduced-motion:reduce){
+  .dash *,.dash *:before,.dash *:after{animation:none!important;transition:none!important}
+}
 </style><?php }
