@@ -178,6 +178,7 @@ if ($path === '/inbox/log' && $method === 'POST') {
     if ($key === '' || !hash_equals($key, $given)) { http_response_code(403); exit('Forbidden'); }
     InboxLog::heartbeat();                                  // the poller ran
     if (empty($_POST['heartbeat'])) {                       // …and it sent an attachment
+        $billId = (string)($_POST['bill_id'] ?? '');
         InboxLog::recordDelivery([
             'event_at'       => (string)($_POST['event_at'] ?? ''),
             'sender'         => (string)($_POST['sender'] ?? ''),
@@ -188,6 +189,12 @@ if ($path === '/inbox/log' && $method === 'POST') {
             'delivery_error' => (string)($_POST['error'] ?? ''),
             // Which file-drop copy this was, so Unidash can send it again itself.
             'drop_url'       => (string)($_POST['drop_url'] ?? ''),
+            // Synchronous WazzOCR result (External API path): the outcome + the
+            // Xero bill it created, recorded straight away — no reply webhook needed.
+            'result'         => (string)($_POST['result'] ?? ''),
+            'ocr_message'    => (string)($_POST['message'] ?? ''),
+            'bill_url'       => $billId !== '' ? xero_bill_url($billId) : '',
+            'bill_number'    => (string)($_POST['bill_number'] ?? ''),
         ]);
     }
     header('Content-Type: application/json'); echo json_encode(['ok' => true]); exit;

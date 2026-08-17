@@ -795,6 +795,33 @@ $stub = new \App\Service\Xero\XeroStubClient();
 check('stub findBillByNumber not found', $stub->findBillByNumber('SN1')['found'], false);
 check('stub deleteDraftBill fails', $stub->deleteDraftBill('x')['ok'], false);
 
+// --- 17. Inbox: synchronous WazzOCR External-API result recording ----
+$IL = '\App\Service\Inbox\InboxLog';
+check('mapWazzStatus created → success',   $IL::mapWazzStatus('created'), 'success');
+check('mapWazzStatus duplicate → success', $IL::mapWazzStatus('duplicate'), 'success');
+check('mapWazzStatus pending → failed',    $IL::mapWazzStatus('pending'), 'failed');
+check('mapWazzStatus error → failed',      $IL::mapWazzStatus('error'), 'failed');
+check('mapWazzStatus empty status → pending', $IL::mapWazzStatus('  '), 'pending');
+
+// A delivery carrying a result is recorded final in one shot (no pending, no webhook).
+$apiId = $IL::recordDelivery([
+    'event_at'=>'2026-08-17T02:00:00Z','sender'=>'ops@sig.com','attachment'=>'inv.pdf','delivery'=>'sent',
+    'result'=>'created','ocr_message'=>'1 bill(s) processed successfully.',
+    'bill_url'=>'https://go.xero.com/AccountsPayable/View.aspx?InvoiceID=abc','bill_number'=>'INV-00421',
+]);
+$apiRow = \App\Db::one("SELECT * FROM inbox_events WHERE id=?", [$apiId]);
+check('API result recorded as success (not pending)', $apiRow['ocr_status'], 'success');
+check('  → bill link stored', $apiRow['bill_url'], 'https://go.xero.com/AccountsPayable/View.aspx?InvoiceID=abc');
+check('  → bill number stored', $apiRow['bill_number'], 'INV-00421');
+
+$dupId = $IL::recordDelivery(['event_at'=>'2026-08-17T02:01:00Z','attachment'=>'dup.pdf','delivery'=>'sent',
+    'result'=>'error','ocr_message'=>'Extraction failed']);
+check('API error result → failed', \App\Db::one("SELECT ocr_status FROM inbox_events WHERE id=?", [$dupId])['ocr_status'], 'failed');
+
+// No result field (WhatsApp path) still starts pending, unchanged.
+$waId = $IL::recordDelivery(['event_at'=>'2026-08-17T02:02:00Z','attachment'=>'wa.pdf','delivery'=>'sent']);
+check('no result → still pending (WhatsApp path intact)', \App\Db::one("SELECT ocr_status FROM inbox_events WHERE id=?", [$waId])['ocr_status'], 'pending');
+
 echo "\n" . str_repeat('=', 40) . "\n";
 printf("TOTAL: %d passed, %d failed\n", $pass, $fail);
 exit($fail === 0 ? 0 : 1);

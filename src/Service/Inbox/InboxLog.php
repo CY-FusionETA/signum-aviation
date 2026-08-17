@@ -63,6 +63,12 @@ final class InboxLog
             ? (string)$d['drop_token']
             : (DropStore::tokenFromUrl((string)($d['drop_url'] ?? '')) ?: ($sent ? DropStore::claimFor($name, $size) : ''));
 
+        // External-API path: the WazzOCR verdict comes back in the same call, so
+        // the outcome + Xero bill link are recorded straight away (no pending, no
+        // reply webhook). WhatsApp path: no result yet → 'pending' until a reply.
+        $result = strtolower(trim((string)($d['result'] ?? '')));
+        $hasResult = $result !== '';
+
         return Db::insert('inbox_events', [
             'event_at'       => self::utc((string)($d['event_at'] ?? '')),
             'source'         => 'gmail',
@@ -72,9 +78,11 @@ final class InboxLog
             'att_size'       => $size,
             'delivery'       => (string)($d['delivery'] ?? ''),
             'delivery_error' => (string)($d['delivery_error'] ?? ''),
-            // Only a successfully sent file can get a processor result back.
-            'ocr_status'     => $sent ? 'pending' : '',
-            'ocr_message'    => '',
+            'ocr_status'     => $hasResult ? self::mapWazzStatus($result) : ($sent ? 'pending' : ''),
+            'ocr_message'    => $hasResult ? (string)($d['ocr_message'] ?? '') : '',
+            'ocr_at'         => $hasResult ? gmdate('Y-m-d H:i:s') : null,
+            'bill_url'       => $hasResult ? (string)($d['bill_url'] ?? '') : '',
+            'bill_number'    => $hasResult ? (string)($d['bill_number'] ?? '') : '',
             'drop_token'     => $token,
             'retry_of'       => (int)($d['retry_of'] ?? 0) ?: null,
         ]);
@@ -179,6 +187,19 @@ final class InboxLog
      *  - ignore: progress pings ("Reading your image…") and unrelated chatter —
      *    these must never consume a pending delivery or create a row.
      */
+    /**
+     * Map a WazzOCR External-API status to the Inbox success|failed model.
+     * Per the API: created + duplicate need no action (the bill is in Xero) →
+     * success; pending (org unmatched), empty, partial and error need attention →
+     * failed. An empty status (WhatsApp path, no verdict yet) stays pending.
+     */
+    public static function mapWazzStatus(string $status): string
+    {
+        $s = strtolower(trim($status));
+        if ($s === '') return 'pending';
+        return in_array($s, ['created', 'duplicate'], true) ? 'success' : 'failed';
+    }
+
     public static function classify(string $text): string
     {
         $t = mb_strtolower(trim($text));
