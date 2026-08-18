@@ -63,6 +63,12 @@ var CONFIG = {
   // Shown when the old copy could not be deleted YET (Xero rate limit / outage).
   // The attachment is deliberately left unprocessed so the next run retries it.
   DUP_RETRY:   'Duplicate detected — could not clear the old bill yet, will retry.',
+  // How long to leave a blocked duplicate alone before sending it again. Every
+  // send is a full OCR + AI extraction in WazzOCR, so retrying a bill that cannot
+  // be cleared yet costs real money for a result we already know. Unidash says how
+  // long Xero is unavailable for (retry_after); this is the floor/ceiling on it.
+  RETRY_MIN_MINUTES: 15,
+  RETRY_MAX_MINUTES: 360,
 };
 
 /** Entry point for the time trigger. */
@@ -88,6 +94,13 @@ function run() {
         if (!isForwardable_(att)) return;
         var key = attKey_(msg, att);
         if (props.getProperty(key)) return;            // this exact attachment already done
+        // Blocked on something that will not clear for a while (Xero rate limit)?
+        // Say nothing and spend nothing until then — sending it again would run
+        // another OCR + AI extraction only to be told "duplicate" a second time.
+        var waitKey = key + ':after';
+        var notBefore = Number(props.getProperty(waitKey) || 0);
+        if (notBefore && Date.now() < notBefore) { anyFailed = true; return; }
+        if (notBefore) props.deleteProperty(waitKey);  // the wait is over
         try {
           var r = sendToWazzOCR_(att, aiPrompt);       // { code, json, raw }
           // Duplicate: WazzOCR made nothing because that invoice number is already
@@ -109,6 +122,12 @@ function run() {
               // the next run sends it again — marking it done here loses the invoice
               // for good, since the thread would get the processed label.
               logInbox_(msg, att, r, CONFIG.DUP_RETRY + (cleared.message ? ' ' + cleared.message : ''));
+              // Come back when Xero says it will be free, clamped so we neither
+              // hammer it nor forget about it.
+              var mins = Math.min(CONFIG.RETRY_MAX_MINUTES,
+                         Math.max(CONFIG.RETRY_MIN_MINUTES, Math.ceil(Number(cleared.retry_after || 0) / 60)));
+              props.setProperty(waitKey, String(Date.now() + mins * 60 * 1000));
+              Logger.log('Duplicate %s blocked — not retrying for %s min', number, mins);
               anyFailed = true;
               return;
             } else {                                   // nothing live to delete (e.g. a voided copy) → show as-is
@@ -118,6 +137,7 @@ function run() {
             logInbox_(msg, att, r);
           }
           if (r.code === 200) {                        // WazzOCR returned a verdict → done, never resend
+            props.deleteProperty(waitKey);
             props.setProperty(key, String(Date.now()));
             anyProcessed = true;
           } else {                                     // transport failure → retried next run
@@ -252,7 +272,8 @@ function clearDuplicate_(number) {
     // (down, bad key) is transient too, so default to retrying when it said nothing.
     var retryable = (typeof json.retryable === 'boolean') ? json.retryable : (code !== 200);
     Logger.log('clearDuplicate "%s" → HTTP %s cleared=%s retryable=%s', number, code, !!json.cleared, retryable);
-    return { code: code, cleared: !!json.cleared, retryable: retryable, message: String(json.message || '') };
+    return { code: code, cleared: !!json.cleared, retryable: retryable,
+             retry_after: Number(json.retry_after || 0), message: String(json.message || '') };
   } catch (e) {
     Logger.log('clearDuplicate failed for "%s": %s', number, e);
     return { code: 0, cleared: false, retryable: true, message: String(e) };
