@@ -1185,7 +1185,6 @@ function render_settings(bool $connected, string $tenant): void {
           </div>
           <div class="apenable">
             <label class="chk"><input type="checkbox" id="ap_enabled"> Enabled</label>
-            <span class="aphint">Sent to WazzOCR with every invoice.</span>
           </div>
         </div>
         <div class="mfoot">
@@ -1197,11 +1196,17 @@ function render_settings(bool $connected, string $tenant): void {
     <style>
       .aiprompt .chead{display:flex;justify-content:space-between;align-items:center}
       .aplist{display:flex;flex-direction:column}
-      .aprow2{display:grid;grid-template-columns:minmax(150px,230px) 56px 1fr auto;align-items:center;gap:14px;padding:12px 2px;border-top:1px solid var(--line)}
+      .aprow2{display:grid;grid-template-columns:minmax(150px,230px) auto 1fr auto;align-items:center;gap:14px;padding:12px 2px;border-top:1px solid var(--line)}
       .aprow2:first-child{border-top:0}
       .aptitle{font-weight:600;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-      .appill{font-size:12px;font-weight:600;border-radius:999px;padding:2px 9px;text-align:center;white-space:nowrap}
-      .appill.on{color:#0f7a34;background:#dcfce7}.appill.off{color:var(--mut);background:#f1f5f9}
+      .apsw{position:relative;width:38px;height:22px;flex:none;padding:0;border:1px solid #d5d9e4;border-radius:999px;
+background:#e5e7eb;cursor:pointer;transition:background .15s,border-color .15s}
+      .apsw::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;
+box-shadow:0 1px 2px rgba(16,24,40,.25);transition:transform .15s}
+      .apsw[aria-checked="true"]{background:var(--green);border-color:var(--green)}
+      .apsw[aria-checked="true"]::after{transform:translateX(16px)}
+      .apsw:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+      .aprow2.off .aptitle,.aprow2.off .apprev{opacity:.55}
       .apprev{color:var(--mut);font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       .aplink{background:none;border:0;color:var(--accent);font-weight:600;cursor:pointer;font-size:13px;padding:4px 6px}
       .aplink:hover{text-decoration:underline}
@@ -1215,7 +1220,6 @@ function render_settings(bool $connected, string $tenant): void {
       textarea.apinput{resize:vertical;line-height:1.5;min-height:120px}
       .apenable{margin-top:14px;padding-top:14px;border-top:1px solid var(--line)}
       .apenable .chk{white-space:normal}
-      .aphint{display:block;margin-top:3px;font-size:12px;color:var(--mut);padding-left:24px}
       @media(max-width:640px){.aprow2{grid-template-columns:1fr auto;gap:6px 10px}.apprev{grid-column:1/-1;order:3}}
     </style>
     <script>
@@ -1233,9 +1237,12 @@ function render_settings(bool $connected, string $tenant): void {
       function render(){
         if(!blocks.length){ listEl.innerHTML='<div class="apempty muted">No prompts yet — click “Add prompt” to create one.</div>'; return; }
         listEl.innerHTML = blocks.map(function(b,i){
-          return '<div class="aprow2">'
+          return '<div class="aprow2'+(b.enabled?'':' off')+'">'
             + '<div class="aptitle">'+esc(b.title||'(untitled)')+'</div>'
-            + '<span class="appill '+(b.enabled?'on':'off')+'">'+(b.enabled?'• on':'off')+'</span>'
+            + '<button type="button" class="apsw" role="switch" data-toggle="'+i+'"'
+            +   ' aria-checked="'+(b.enabled?'true':'false')+'"'
+            +   ' title="'+(b.enabled?'Included in the prompt — click to turn off':'Not included — click to turn on')+'"'
+            +   ' aria-label="Enable '+esc(b.title||'untitled')+'"></button>'
             + '<div class="apprev">'+esc(preview(b.body))+'</div>'
             + '<button type="button" class="aplink" data-edit="'+i+'">Edit</button>'
             + '</div>';
@@ -1260,7 +1267,16 @@ function render_settings(bool $connected, string $tenant): void {
         document.getElementById('apform').submit();
       }
       document.getElementById('apadd').addEventListener('click', function(){ open(-1); });
-      listEl.addEventListener('click', function(e){ var t=e.target; if(t && t.dataset && t.dataset.edit!==undefined) open(parseInt(t.dataset.edit,10)); });
+      listEl.addEventListener('click', function(e){
+        var t=e.target; if(!t||!t.dataset) return;
+        if(t.dataset.edit!==undefined){ open(parseInt(t.dataset.edit,10)); return; }
+        // Toggle straight from the list — flip it on screen, then save.
+        if(t.dataset.toggle!==undefined){
+          var i=parseInt(t.dataset.toggle,10); if(!blocks[i]) return;
+          blocks[i].enabled=!blocks[i].enabled;
+          render(); persist();
+        }
+      });
       document.getElementById('ap_save').addEventListener('click', function(){
         var b={ title:tI.value.trim(), body:bI.value, enabled:eI.checked };
         if(b.body.trim()===''){ if(editing<0){ close(); return; } blocks.splice(editing,1); persist(); return; }
