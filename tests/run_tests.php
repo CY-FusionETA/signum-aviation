@@ -914,6 +914,37 @@ check('pulse is working (fresh activity)', $pulse['active'], true);
 check('  → tallies today', [$pulse['today']['bills'], $pulse['today']['trips']], [1, 1]);
 check('  → cleared duplicate is not counted an error', $pulse['today']['errors'], 1); // only bad.pdf, not the cleared dup
 
+// --- 20. AI prompt add-on (WazzOCR per-upload aiPrompt) ---------------
+$AP = '\App\Service\Wazz\AiPrompt';
+Settings::forget('wazzocr.ai_prompts');
+check('no blocks → empty combined prompt', $AP::combined(), '');
+check('no blocks → empty list', $AP::blocks(), []);
+
+$AP::save([
+    ['title'=>'Currency', 'body'=>'Read the currency stated on the invoice.', 'enabled'=>true],
+    ['title'=>'Invoice no', 'body'=>'Treat SN/Ref as the invoice number if Invoice No is blank.', 'enabled'=>false],
+    ['title'=>'', 'body'=>'   ', 'enabled'=>true],   // blank body → dropped
+]);
+$blocks = $AP::blocks();
+check('blank-body block is dropped on save', count($blocks), 2);
+check('  → enabled flags preserved', [$blocks[0]['enabled'], $blocks[1]['enabled']], [true, false]);
+
+// combined() = enabled blocks only, title-prefixed, blank line between.
+check('combined uses only enabled blocks, title-prefixed',
+      $AP::combined(), "Currency:\nRead the currency stated on the invoice.");
+
+$AP::save([
+    ['title'=>'Currency', 'body'=>'Read the currency.', 'enabled'=>true],
+    ['title'=>'', 'body'=>'Handling charges go to code 6-1234.', 'enabled'=>true],
+]);
+check('two enabled: titled + untitled, joined',
+      $AP::combined(), "Currency:\nRead the currency.\n\nHandling charges go to code 6-1234.");
+
+// Everything off → nothing sent (poller omits aiPrompt entirely).
+$AP::save([['title'=>'X', 'body'=>'do a thing', 'enabled'=>false]]);
+check('all disabled → empty combined', $AP::combined(), '');
+Settings::forget('wazzocr.ai_prompts');
+
 echo "\n" . str_repeat('=', 40) . "\n";
 printf("TOTAL: %d passed, %d failed\n", $pass, $fail);
 exit($fail === 0 ? 0 : 1);

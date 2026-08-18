@@ -76,6 +76,8 @@ function run() {
 
   pingHeartbeat_();   // tell the Inbox the poller ran, even on idle minutes
 
+  var aiPrompt = fetchAiPrompt_();   // operator's AI prompt add-on, sent with every upload
+
   threads.forEach(function (thread) {
     var anyProcessed = false, anyFailed = false;
     thread.getMessages().forEach(function (msg) {
@@ -84,7 +86,7 @@ function run() {
         var key = attKey_(msg, att);
         if (props.getProperty(key)) return;            // this exact attachment already done
         try {
-          var r = sendToWazzOCR_(att);                 // { code, json, raw }
+          var r = sendToWazzOCR_(att, aiPrompt);       // { code, json, raw }
           // Duplicate: WazzOCR made nothing because that invoice number is already
           // on a Xero bill. Ask Unidash (the only side with the Xero connection) to
           // delete the leftover DRAFT, then re-send the same PDF so the bill is
@@ -95,7 +97,7 @@ function run() {
             var cleared = number ? clearDuplicate_(number)
                                  : { cleared: false, message: 'No invoice number in the duplicate reply.' };
             if (cleared.cleared) {
-              var r2 = sendToWazzOCR_(att);            // fresh bill under the now-free number
+              var r2 = sendToWazzOCR_(att, aiPrompt);  // fresh bill under the now-free number
               logInbox_(msg, att, r2, CONFIG.DUP_NOTE);
               r = r2;                                  // done-ness follows the re-send
             } else {                                   // nothing live to delete (e.g. a voided copy) → show as-is
@@ -143,17 +145,19 @@ function isForwardable_(att) {
  * Send one PDF to the WazzOCR External API and return its verdict.
  * @return {{code:number, json:Object, raw:string}}
  */
-function sendToWazzOCR_(att) {
+function sendToWazzOCR_(att, aiPrompt) {
+  var body = {
+    fileBase64: Utilities.base64Encode(att.getBytes()),
+    mimeType:   'application/pdf',
+    fileName:   att.getName(),
+  };
+  if (aiPrompt) body.aiPrompt = aiPrompt;   // Unidash AI prompt add-on, per-upload
   var res = UrlFetchApp.fetch(CONFIG.WAZZOCR_API_BASE + '/api/ext/process-pdf', {
     method: 'post',
     contentType: 'application/json',
     muteHttpExceptions: true,
     headers: { 'X-Api-Key': CONFIG.WAZZOCR_API_KEY },
-    payload: JSON.stringify({
-      fileBase64: Utilities.base64Encode(att.getBytes()),
-      mimeType:   'application/pdf',
-      fileName:   att.getName(),
-    }),
+    payload: JSON.stringify(body),
   });
   var code = res.getResponseCode();
   var raw  = res.getContentText();
@@ -237,6 +241,27 @@ function clearDuplicate_(number) {
   } catch (e) {
     Logger.log('clearDuplicate failed for "%s": %s', number, e);
     return { code: 0, cleared: false, message: String(e) };
+  }
+}
+
+/**
+ * The operator's AI prompt add-on, managed in Unidash (Settings → AI prompt add-on).
+ * Fetched once per run and sent to WazzOCR with every upload as the per-request
+ * aiPrompt field. Best-effort: a failure just means no extra prompt this run.
+ * @return {string}
+ */
+function fetchAiPrompt_() {
+  if (!CONFIG.INBOX_URL) return '';
+  var url = CONFIG.INBOX_URL.replace(/\/inbox\/log$/, '/inbox/ai-prompt')
+          + '?key=' + encodeURIComponent(CONFIG.INBOX_KEY);
+  try {
+    var res = UrlFetchApp.fetch(url, { method: 'get', muteHttpExceptions: true });
+    if (res.getResponseCode() !== 200) return '';
+    var json = JSON.parse(res.getContentText()) || {};
+    return String(json.prompt || '');
+  } catch (e) {
+    Logger.log('AI prompt fetch failed: %s', e);
+    return '';
   }
 }
 

@@ -215,6 +215,17 @@ if ($path === '/inbox/clear-duplicate' && $method === 'POST') {
     echo json_encode(DuplicateBill::clearByNumber((string)($_POST['bill_number'] ?? '')));
     exit;
 }
+// AI prompt add-on. The poller fetches the operator's enabled prompt blocks here
+// and sends them to WazzOCR as the per-upload `aiPrompt` field on every request.
+// drop.key auth, before the sign-in gate (the Apps Script is unauthenticated).
+if ($path === '/inbox/ai-prompt' && $method === 'GET') {
+    $key   = (string)(Settings::get('drop.key', '') ?: cfg('drop.key', ''));
+    $given = (string)($_GET['key'] ?? '');
+    if ($key === '' || !hash_equals($key, $given)) { http_response_code(403); exit('Forbidden'); }
+    header('Content-Type: application/json');
+    echo json_encode(['prompt' => \App\Service\Wazz\AiPrompt::combined()], JSON_UNESCAPED_UNICODE);
+    exit;
+}
 if ($path === '/wazzup/webhook' && $method === 'POST') {
     $key   = (string)(Settings::get('drop.key', '') ?: cfg('drop.key', ''));
     $given = (string)($_GET['key'] ?? '');
@@ -275,6 +286,25 @@ if ($path === '/settings' && $method === 'POST') {
     if (isset($_POST['inv_support']))   Settings::set('invoice.support_fee', (string)(float)$_POST['inv_support']);
     Settings::set('invoice.account_code', trim($_POST['inv_account'] ?? ''));
     $_SESSION['flash_ok'] = 'Settings saved.'; redirect('/?view=settings');
+}
+// Save the AI prompt add-on blocks (Settings → AI prompt add-on). Rows arrive as
+// parallel arrays keyed by row index; a checkbox is only present when ticked.
+if ($path === '/settings/ai-prompt' && $method === 'POST') {
+    csrf_check();
+    $titles  = (array)($_POST['p_title'] ?? []);
+    $bodies  = (array)($_POST['p_body'] ?? []);
+    $enabled = (array)($_POST['p_enabled'] ?? []);
+    $blocks = [];
+    foreach ($bodies as $i => $body) {
+        $blocks[] = [
+            'title'   => (string)($titles[$i] ?? ''),
+            'body'    => (string)$body,
+            'enabled' => isset($enabled[$i]),
+        ];
+    }
+    \App\Service\Wazz\AiPrompt::save($blocks);
+    $_SESSION['flash_ok'] = 'AI prompt saved — it will be sent with every invoice from now on.';
+    redirect('/?view=settings');
 }
 
 // --- Xero OAuth -----------------------------------------------------
@@ -1119,6 +1149,68 @@ function render_settings(bool $connected, string $tenant): void {
         <div class="field"><label>&nbsp;</label><button class="btn primary">Save settings</button></div>
       </form>
     </section>
+
+    <?php
+    // AI prompt add-on: operator-managed extraction rules, sent to WazzOCR on every
+    // upload as the per-request aiPrompt field. At least one (blank) row to type into.
+    $apBlocks = \App\Service\Wazz\AiPrompt::blocks();
+    if (!$apBlocks) $apBlocks = [['title' => '', 'body' => '', 'enabled' => true]];
+    ?>
+    <section class="card aiprompt">
+      <div class="chead"><h2>AI prompt add-on</h2></div>
+      <p class="muted" style="margin:0 0 14px">
+        Extra extraction rules for this account, sent to WazzOCR with <b>every invoice</b> the poller uploads (WazzOCR's per-upload <span class="mono">aiPrompt</span>). Combined with WazzOCR's own general and account-level prompts — enabled blocks only. Use it for things like which text is the invoice number, currency handling, or supplier-specific account codes.
+      </p>
+      <form method="post" action="<?= e(base()) ?>/settings/ai-prompt">
+        <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>">
+        <div id="apblocks">
+          <?php foreach ($apBlocks as $i => $b): ?>
+          <div class="apblock">
+            <div class="aprow">
+              <input name="p_title[<?= $i ?>]" value="<?= e((string)$b['title']) ?>" placeholder="Title (e.g. Currency)">
+              <label class="chk"><input type="checkbox" name="p_enabled[<?= $i ?>]" <?= !empty($b['enabled']) ? 'checked' : '' ?>> On</label>
+              <button type="button" class="btn ghost sm apdel">Remove</button>
+            </div>
+            <textarea name="p_body[<?= $i ?>]" rows="3" placeholder="Prompt text…"><?= e((string)$b['body']) ?></textarea>
+          </div>
+          <?php endforeach; ?>
+        </div>
+        <div class="aprowbtns">
+          <button type="button" class="btn ghost sm" id="apadd">+ Add prompt</button>
+          <button class="btn primary">Save AI prompt</button>
+        </div>
+      </form>
+    </section>
+    <style>
+      .aiprompt .apblock{padding:12px 0;border-top:1px solid var(--line)}
+      .aiprompt .apblock:first-child{border-top:0;padding-top:0}
+      .aiprompt .aprow{display:flex;align-items:center;gap:12px;margin-bottom:8px}
+      .aiprompt .aprow input[name^="p_title"]{flex:1;min-width:0}
+      .aiprompt .aprow .chk{white-space:nowrap;color:var(--mut);font-size:13px}
+      .aiprompt textarea{width:100%;font:inherit;padding:9px 11px;border:1px solid var(--line);border-radius:8px;resize:vertical}
+      .aiprompt .aprowbtns{display:flex;justify-content:space-between;gap:12px;margin-top:14px}
+    </style>
+    <script>
+    (function(){
+      var wrap = document.getElementById('apblocks'); if(!wrap) return;
+      var idx = <?= count($apBlocks) ?>;
+      var add = document.getElementById('apadd');
+      add && add.addEventListener('click', function(){
+        var d = document.createElement('div'); d.className = 'apblock';
+        d.innerHTML =
+          '<div class="aprow"><input name="p_title['+idx+']" placeholder="Title (e.g. Currency)">'
+          + '<label class="chk"><input type="checkbox" name="p_enabled['+idx+']" checked> On</label>'
+          + '<button type="button" class="btn ghost sm apdel">Remove</button></div>'
+          + '<textarea name="p_body['+idx+']" rows="3" placeholder="Prompt text…"></textarea>';
+        wrap.appendChild(d); idx++;
+      });
+      wrap.addEventListener('click', function(e){
+        if(e.target && e.target.classList.contains('apdel')){
+          var b = e.target.closest('.apblock'); if(b) b.remove();
+        }
+      });
+    })();
+    </script>
     <?php
 }
 
