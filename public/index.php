@@ -1175,13 +1175,20 @@ function render_settings(bool $connected, string $tenant): void {
       <div class="mcard" role="dialog" aria-modal="true">
         <div class="mhead"><h3 id="apmtitle">Edit prompt block</h3><button class="mx" type="button" data-apclose aria-label="Close">×</button></div>
         <div class="mbody">
-          <label class="aplbl">TITLE</label>
-          <input id="ap_title" class="apinput" placeholder="e.g. Currency">
-          <label class="aplbl" style="margin-top:14px">PROMPT TEXT</label>
-          <textarea id="ap_body" class="apinput" rows="9" placeholder="Prompt text…"></textarea>
-          <label class="chk" style="margin-top:12px"><input type="checkbox" id="ap_enabled"> Enabled (included in the prompt)</label>
+          <div class="apfield">
+            <label class="aplbl" for="ap_title">TITLE</label>
+            <input id="ap_title" class="apinput" placeholder="e.g. Currency">
+          </div>
+          <div class="apfield">
+            <label class="aplbl" for="ap_body">PROMPT TEXT</label>
+            <textarea id="ap_body" class="apinput" rows="9" placeholder="e.g. Always read the currency from the invoice header."></textarea>
+          </div>
+          <div class="apenable">
+            <label class="chk"><input type="checkbox" id="ap_enabled"> Enabled</label>
+            <span class="aphint">Sent to WazzOCR with every invoice.</span>
+          </div>
         </div>
-        <div class="mfoot" style="justify-content:space-between">
+        <div class="mfoot">
           <button type="button" class="btn danger" id="ap_delete">Delete</button>
           <button type="button" class="btn primary" id="ap_save">Save</button>
         </div>
@@ -1199,9 +1206,16 @@ function render_settings(bool $connected, string $tenant): void {
       .aplink{background:none;border:0;color:var(--accent);font-weight:600;cursor:pointer;font-size:13px;padding:4px 6px}
       .aplink:hover{text-decoration:underline}
       .apempty{padding:14px 2px;font-size:13px}
-      .aplbl{display:block;font-size:11px;font-weight:700;letter-spacing:.04em;color:var(--mut)}
-      .apinput{width:100%;font:inherit;padding:9px 11px;border:1px solid var(--line);border-radius:8px;margin-top:6px}
-      textarea.apinput{resize:vertical;line-height:1.5}
+      .aplbl{display:block;font-size:11px;font-weight:700;letter-spacing:.06em;color:var(--mut)}
+      .aplbl+.apinput{margin-top:6px}
+      .apfield+.apfield{margin-top:14px}
+      .apinput{width:100%;font:inherit;padding:9px 11px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink);transition:border-color .12s,box-shadow .12s}
+      .apinput:focus{outline:0;border-color:var(--accent);box-shadow:0 0 0 3px rgba(37,99,235,.14)}
+      .apinput::placeholder{color:#9aa3b2}
+      textarea.apinput{resize:vertical;line-height:1.5;min-height:120px}
+      .apenable{margin-top:14px;padding-top:14px;border-top:1px solid var(--line)}
+      .apenable .chk{white-space:normal}
+      .aphint{display:block;margin-top:3px;font-size:12px;color:var(--mut);padding-left:24px}
       @media(max-width:640px){.aprow2{grid-template-columns:1fr auto;gap:6px 10px}.apprev{grid-column:1/-1;order:3}}
     </style>
     <script>
@@ -1924,6 +1938,9 @@ th.actcol,td.actcol{width:38px;padding-left:0;padding-right:8px;text-align:right
 .del{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;padding:0;background:transparent;border:1px solid transparent;border-radius:7px;color:var(--gray);cursor:pointer}
 .del:hover{color:var(--red);background:#fef2f2;border-color:#f3c2c2}
 .mfoot{display:flex;justify-content:flex-end;gap:8px;margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
+.mcard>.mfoot{justify-content:flex-start;align-items:center;margin-top:0;padding:14px 18px;position:sticky;bottom:0;background:#fff;border-radius:0 0 14px 14px}
+/* Save anchors right whether or not Delete is shown (hidden when adding). */
+.mcard>.mfoot .btn.primary{margin-left:auto}
 .chipbtn{font-family:ui-monospace,monospace;font-size:12px;padding:2px 8px;border-radius:6px;border:1px solid transparent;cursor:pointer}
 .chipbtn.miss{background:#fef3c7;color:#92400e;border-color:#fde68a}
 .chipbtn.miss:hover{background:#fde68a}
