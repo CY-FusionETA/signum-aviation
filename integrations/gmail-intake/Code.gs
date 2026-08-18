@@ -39,8 +39,8 @@
 
 var CONFIG = {
   // WazzOCR External API — where the PDF is sent and the bill is created.
-  WAZZOCR_API_BASE: 'https://YOUR-WAZZOCR-DOMAIN',              // e.g. https://wazzocr.fusioneta.com.my (no trailing slash)
-  WAZZOCR_API_KEY:  'YOUR_WAZZOCR_API_KEY',                    // Admin → Connections → External API → Generate
+  WAZZOCR_API_BASE: 'https://wazzocr.fusioneta.com.my',              // e.g. https://wazzocr.fusioneta.com.my (no trailing slash)
+  WAZZOCR_API_KEY:  'a7fc1e2878393ff801302aac0792a91f109a293a0fc72eed',                    // Admin → Connections → External API → Generate
 
   // Unidash Inbox (execution log). One POST per attachment with the outcome, plus
   // a heartbeat each run. INBOX_KEY must equal drop.key in Unidash's config.php.
