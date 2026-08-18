@@ -1199,13 +1199,22 @@ function render_settings(bool $connected, string $tenant): void {
       .aprow2{display:grid;grid-template-columns:minmax(150px,230px) auto 1fr auto;align-items:center;gap:14px;padding:12px 2px;border-top:1px solid var(--line)}
       .aprow2:first-child{border-top:0}
       .aptitle{font-weight:600;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-      .apsw{position:relative;width:38px;height:22px;flex:none;padding:0;border:1px solid #d5d9e4;border-radius:999px;
-background:#e5e7eb;cursor:pointer;transition:background .15s,border-color .15s}
-      .apsw::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;
-box-shadow:0 1px 2px rgba(16,24,40,.25);transition:transform .15s}
-      .apsw[aria-checked="true"]{background:var(--green);border-color:var(--green)}
-      .apsw[aria-checked="true"]::after{transform:translateX(16px)}
-      .apsw:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+      /* Track: recessed, so the knob reads as sitting on top of it. */
+      .apsw{position:relative;width:40px;height:23px;flex:none;padding:0;border:0;border-radius:999px;cursor:pointer;
+background:linear-gradient(180deg,#d5dbe4,#c4ccd8);box-shadow:inset 0 1px 2.5px rgba(16,24,40,.22);
+-webkit-tap-highlight-color:transparent;transition:background .22s cubic-bezier(.4,.2,.2,1),box-shadow .22s}
+      .apsw:hover{background:linear-gradient(180deg,#c8cfda,#b6bfcd)}
+      .apsw::after{content:"";position:absolute;top:2.5px;left:2.5px;width:18px;height:18px;border-radius:50%;background:#fff;
+box-shadow:0 1px 1px rgba(16,24,40,.16),0 2px 4px rgba(16,24,40,.22);
+transition:transform .22s cubic-bezier(.4,.2,.2,1),width .18s cubic-bezier(.4,.2,.2,1)}
+      .apsw[aria-checked="true"]{background:linear-gradient(180deg,#22c55e,#16a34a);
+box-shadow:inset 0 1px 2px rgba(6,78,36,.28),0 0 0 3px rgba(22,163,74,.10)}
+      .apsw[aria-checked="true"]:hover{background:linear-gradient(180deg,#1eb455,#15803d)}
+      .apsw[aria-checked="true"]::after{transform:translateX(17px)}
+      /* Press squishes the knob toward the direction of travel. */
+      .apsw:active::after{width:21px}
+      .apsw[aria-checked="true"]:active::after{transform:translateX(14px)}
+      .apsw:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
       .aprow2.off .aptitle,.aprow2.off .apprev{opacity:.55}
       .apprev{color:var(--mut);font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       .aplink{background:none;border:0;color:var(--accent);font-weight:600;cursor:pointer;font-size:13px;padding:4px 6px}
