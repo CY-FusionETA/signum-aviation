@@ -33,6 +33,9 @@ $add = [
         'dup_ok'      => 'INTEGER',
         'drop_token'  => 'TEXT',
         'retry_of'    => 'INTEGER',
+        // Repeat sends of one attachment that keeps hitting the same unresolved
+        // duplicate collapse onto a single row; this counts them.
+        'dup_attempts' => 'INTEGER NOT NULL DEFAULT 0',
     ],
 ];
 foreach ($add as $table => $cols) {

@@ -781,7 +781,11 @@ function render_inbox(): void {
           <td><?= $ocell($r) ?></td>
           <td>
             <?php if ($msg !== ''): ?><span class="billdesc" style="max-width:340px" title="<?= e($tip !== '' ? $tip : $msg) ?>"><?= e(mb_strimwidth($msg, 0, 90, '…')) ?></span><?php else: ?><span class="muted">—</span><?php endif; ?>
-            <?php if ($dupDone !== ''): ?><div class="muted small" style="max-width:340px" title="<?= e($dupDone) ?>"><?= e(mb_strimwidth($dupDone, 0, 80, '…')) ?></div><?php endif; ?>
+            <?php if ($dupDone !== ''): ?><div class="muted small" style="max-width:340px" title="<?= e($dupDone) ?>"><?= e(mb_strimwidth($dupDone, 0, 80, '…')) ?><?php
+              // Repeat sends fold onto this row; say how many so a stuck retry is
+              // visible without it filling the Inbox one line at a time.
+              $tries = (int)($r['dup_attempts'] ?? 0);
+              if ($tries > 1): ?> <span class="pill gray" title="Sent again automatically <?= $tries ?> times — the newest attempt is the one shown">×<?= $tries ?></span><?php endif; ?></div><?php endif; ?>
           </td>
         </tr>
       <?php endforeach; endif; ?>

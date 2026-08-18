@@ -830,6 +830,40 @@ $cDelRl = $fakeXero($DRAFT); $cDelRl->delFail = ['ok'=>false,'error'=>'Xero is r
 $c4 = $DB::clearByNumber('DEL-RL', $cDelRl);
 check('rate-limited delete is retryable', [$c4['cleared'], $c4['retryable']], [false, true]);
 
+// A duplicate the poller cannot clear yet is re-sent every run. Those repeats are
+// the same unfinished work, so they collapse onto ONE row instead of one line a
+// minute (18 Aug 2026: SN030473 filed 9 identical rows in 9 minutes).
+$RETRY = \App\Service\Inbox\InboxLog::RETRY_NOTE_PREFIX . ', will retry.';
+$mkRetry = fn() => $IL::recordDelivery([
+    'event_at'=>gmdate('Y-m-d\TH:i:s\Z'),'sender'=>'cy@example.com','subject'=>'Invoice',
+    'attachment'=>'SN-COLLAPSE.pdf','delivery'=>'sent','result'=>'duplicate',
+    'ocr_message'=>'Xero reported an existing bill.','dup_note'=>$RETRY,
+]);
+$r1 = $mkRetry(); $r2 = $mkRetry(); $r3 = $mkRetry();
+check('repeat retries reuse one row', [$r2, $r3], [$r1, $r1]);
+$collapsed = \App\Db::one("SELECT * FROM inbox_events WHERE id=?", [$r1]);
+check('  → attempts are counted', (int)$collapsed['dup_attempts'], 3);
+check('  → only one row exists for it',
+      (int)\App\Db::one("SELECT COUNT(*) c FROM inbox_events WHERE attachment='SN-COLLAPSE.pdf'")['c'], 1);
+
+// A different sender's send of the same filename is its own piece of work.
+$other = $IL::recordDelivery([
+    'event_at'=>gmdate('Y-m-d\TH:i:s\Z'),'sender'=>'someone-else@example.com','subject'=>'Invoice',
+    'attachment'=>'SN-COLLAPSE.pdf','delivery'=>'sent','result'=>'duplicate',
+    'ocr_message'=>'Xero reported an existing bill.','dup_note'=>$RETRY,
+]);
+check('a different sender gets its own row', $other !== $r1, true);
+
+// A normal (non-retry) send never collapses — every real delivery is its own row.
+$plain1 = $IL::recordDelivery(['event_at'=>gmdate('Y-m-d\TH:i:s\Z'),'sender'=>'cy@example.com',
+    'attachment'=>'SN-PLAIN.pdf','delivery'=>'sent','result'=>'error','ocr_message'=>'nope']);
+$plain2 = $IL::recordDelivery(['event_at'=>gmdate('Y-m-d\TH:i:s\Z'),'sender'=>'cy@example.com',
+    'attachment'=>'SN-PLAIN.pdf','delivery'=>'sent','result'=>'error','ocr_message'=>'nope']);
+check('ordinary failures still get their own rows', $plain1 !== $plain2, true);
+check('isRetryNote only matches the retry marker',
+      [$IL::isRetryNote($RETRY), $IL::isRetryNote($DB::CLEARED_MESSAGE), $IL::isRetryNote('')],
+      [true, false, false]);
+
 // The fresh bill logged after clearing: Success, real link, AND the note so the
 // operator can see it was a duplicate that got auto-remade.
 $freshDup = $IL::recordDelivery([

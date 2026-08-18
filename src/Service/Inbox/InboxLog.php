@@ -69,6 +69,22 @@ final class InboxLog
         $result = strtolower(trim((string)($d['result'] ?? '')));
         $hasResult = $result !== '';
 
+        // A duplicate that could not be cleared yet is re-sent by the poller every
+        // run until Xero frees up. That is the same unfinished piece of work, not a
+        // new one, so it collapses onto the row already open for this attachment
+        // instead of adding one Inbox line a minute.
+        $note = (string)($d['dup_note'] ?? '');
+        if (self::isRetryNote($note)) {
+            $open = self::openRetryRow($name, (string)($d['sender'] ?? ''));
+            if ($open) {
+                Db::q("UPDATE inbox_events
+                          SET event_at = ?, ocr_message = ?, dup_action = ?, dup_attempts = COALESCE(dup_attempts,1) + 1
+                        WHERE id = ?",
+                      [self::utc((string)($d['event_at'] ?? '')), (string)($d['ocr_message'] ?? ''), $note, (int)$open['id']]);
+                return (int)$open['id'];
+            }
+        }
+
         return Db::insert('inbox_events', [
             'event_at'       => self::utc((string)($d['event_at'] ?? '')),
             'source'         => 'gmail',
@@ -85,10 +101,48 @@ final class InboxLog
             'bill_number'    => $hasResult ? (string)($d['bill_number'] ?? '') : '',
             // The fresh bill made after a duplicate was auto-cleared says so on the
             // row (see DuplicateBill::clearByNumber / CLEARED_MESSAGE).
-            'dup_action'     => (string)($d['dup_note'] ?? ''),
+            'dup_action'     => $note,
             'drop_token'     => $token,
             'retry_of'       => (int)($d['retry_of'] ?? 0) ?: null,
+            'dup_attempts'   => self::isRetryNote($note) ? 1 : 0,
         ]);
+    }
+
+    /** How long repeats keep folding onto the same row. */
+    public const RETRY_COLLAPSE_HOURS = 24;
+
+    /** Marker the poller puts on a duplicate it could not clear yet. */
+    public const RETRY_NOTE_PREFIX = 'Duplicate detected — could not clear the old bill yet';
+
+    /** Is this note a "still retrying" one rather than a finished outcome? */
+    public static function isRetryNote(string $note): bool
+    {
+        return $note !== '' && str_starts_with(trim($note), self::RETRY_NOTE_PREFIX);
+    }
+
+    /**
+     * The row already open for this attachment's unresolved duplicate, if any.
+     * Scoped to the same file + sender and to rows still marked as retrying, so a
+     * genuinely new send (or one that has since succeeded) starts its own row.
+     */
+    private static function openRetryRow(string $attachment, string $sender): ?array
+    {
+        if ($attachment === '') return null;
+        // Only ever the LATEST row for this file+sender: if the invoice has since
+        // gone through, that row is a success and the next duplicate legitimately
+        // starts a new one instead of reopening old history.
+        $last = Db::one(
+            "SELECT id, dup_attempts, dup_ok, event_at FROM inbox_events
+              WHERE attachment = ? AND sender = ?
+              ORDER BY id DESC LIMIT 1",
+            [$attachment, $sender]
+        );
+        if (!$last || (int)($last['dup_attempts'] ?? 0) < 1 || (int)($last['dup_ok'] ?? 0) === 1) return null;
+        // Stop collapsing onto a row that has gone stale, so a fresh send days
+        // later reads as its own event.
+        $seen = strtotime((string)($last['event_at'] ?? '')) ?: 0;
+        if ($seen && (time() - $seen) > self::RETRY_COLLAPSE_HOURS * 3600) return null;
+        return $last;
     }
 
     /**

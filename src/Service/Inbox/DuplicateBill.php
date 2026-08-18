@@ -192,6 +192,13 @@ final class DuplicateBill
         if ($number === '') return ['ok' => false, 'cleared' => false, 'retryable' => false, 'status' => '', 'message' => 'No invoice number given.'];
         if (!self::enabled()) return ['ok' => false, 'cleared' => false, 'retryable' => false, 'status' => '', 'message' => "Automatic clearing is off — bill {$number} left in Xero."];
 
+        // Xero already told us it will refuse until a given time — don't spend a
+        // call (or a WazzOCR upload) to be told again, just say when to come back.
+        if ($xero === null && ($wait = \App\Service\Xero\XeroOAuth::cooldownLeft()) > 0) {
+            return ['ok' => false, 'cleared' => false, 'retryable' => true, 'retry_after' => $wait, 'status' => 'cooldown',
+                    'message' => "Xero is still rate-limiting; bill {$number} will be cleared automatically once it frees up."];
+        }
+
         try {
             $xero  = $xero ?: XeroClientFactory::make();
             $found = $xero->findBillByNumber($number);
@@ -199,6 +206,7 @@ final class DuplicateBill
                 // A lookup that failed tells us nothing about the bill: retry unless
                 // Xero gave a definite answer.
                 return ['ok' => false, 'cleared' => false, 'retryable' => (bool)($found['retryable'] ?? true), 'status' => '',
+                        'retry_after' => \App\Service\Xero\XeroOAuth::cooldownLeft(),
                         'message' => "Could not look up bill {$number} in Xero: " . ($found['error'] ?? 'unknown error')];
             }
             if (empty($found['found'])) {

@@ -265,6 +265,7 @@ final class XeroOAuth
         $err  = curl_error($ch);
         curl_close($ch);
         self::logCall($method, $url, $code);
+        self::noteRateLimit($code);
         if ($resp === false) throw new \RuntimeException('Network error calling Xero: ' . $err);
         return [$code, (string)$resp];
     }
@@ -276,6 +277,25 @@ final class XeroOAuth
     public static function lastHeader(string $name): string
     {
         return (string)(self::$lastHeaders[strtolower($name)] ?? '');
+    }
+
+    /**
+     * Remember when Xero will accept calls again. A 429 for the DAY limit lasts
+     * hours, and every call made inside that window is refused anyway — so
+     * recording it lets callers skip the round trip instead of hammering.
+     */
+    private static function noteRateLimit(int $code): void
+    {
+        if ($code !== 429) return;
+        $after = (int)self::lastHeader('retry-after');
+        if ($after > 0) Settings::set('xero.cooldown_until', (string)(time() + $after));
+    }
+
+    /** Seconds until Xero will take calls again (0 when it is not rate-limiting). */
+    public static function cooldownLeft(): int
+    {
+        $until = (int)Settings::get('xero.cooldown_until', '0');
+        return $until > time() ? $until - time() : 0;
     }
 
     /**
