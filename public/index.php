@@ -195,9 +195,25 @@ if ($path === '/inbox/log' && $method === 'POST') {
             'ocr_message'    => (string)($_POST['message'] ?? ''),
             'bill_url'       => $billId !== '' ? xero_bill_url($billId) : '',
             'bill_number'    => (string)($_POST['bill_number'] ?? ''),
+            // Set on the fresh bill made after a duplicate was auto-cleared, so the
+            // row shows "Duplicate invoice detected, auto deleted old copy."
+            'dup_note'       => (string)($_POST['dup_note'] ?? ''),
         ]);
     }
     header('Content-Type: application/json'); echo json_encode(['ok' => true]); exit;
+}
+// External-API duplicate recovery. WazzOCR reports the invoice number is already on
+// a Xero bill (bills[0].status = "duplicate"), so it made nothing. Only Unidash holds
+// the Xero connection, so the Apps Script asks it here to delete that leftover DRAFT;
+// on success the Script re-sends the same PDF — a fresh bill under the now-free number —
+// and logs it via /inbox/log with dup_note set. drop.key auth, before the sign-in gate.
+if ($path === '/inbox/clear-duplicate' && $method === 'POST') {
+    $key   = (string)(Settings::get('drop.key', '') ?: cfg('drop.key', ''));
+    $given = (string)($_POST['key'] ?? ($_GET['key'] ?? ''));
+    if ($key === '' || !hash_equals($key, $given)) { http_response_code(403); exit('Forbidden'); }
+    header('Content-Type: application/json');
+    echo json_encode(DuplicateBill::clearByNumber((string)($_POST['bill_number'] ?? '')));
+    exit;
 }
 if ($path === '/wazzup/webhook' && $method === 'POST') {
     $key   = (string)(Settings::get('drop.key', '') ?: cfg('drop.key', ''));

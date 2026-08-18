@@ -83,6 +83,9 @@ final class InboxLog
             'ocr_at'         => $hasResult ? gmdate('Y-m-d H:i:s') : null,
             'bill_url'       => $hasResult ? (string)($d['bill_url'] ?? '') : '',
             'bill_number'    => $hasResult ? (string)($d['bill_number'] ?? '') : '',
+            // The fresh bill made after a duplicate was auto-cleared says so on the
+            // row (see DuplicateBill::clearByNumber / CLEARED_MESSAGE).
+            'dup_action'     => (string)($d['dup_note'] ?? ''),
             'drop_token'     => $token,
             'retry_of'       => (int)($d['retry_of'] ?? 0) ?: null,
         ]);

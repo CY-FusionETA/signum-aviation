@@ -56,6 +56,10 @@ var CONFIG = {
   MIN_BYTES:   8 * 1024,      // skip tiny inline PDFs (rare, but keeps noise out)
   MAX_THREADS_PER_RUN: 20,
   SCAN_DAYS:   3,             // only scan threads active in the last N days (Gmail quota saver)
+
+  // Shown on the Inbox row when a duplicate is auto-cleared and the bill remade.
+  // Keep this identical to Unidash's DuplicateBill::CLEARED_MESSAGE.
+  DUP_NOTE:    'Duplicate invoice detected, auto deleted old copy.',
 };
 
 /** Entry point for the time trigger. */
@@ -81,7 +85,25 @@ function run() {
         if (props.getProperty(key)) return;            // this exact attachment already done
         try {
           var r = sendToWazzOCR_(att);                 // { code, json, raw }
-          logInbox_(msg, att, r);
+          // Duplicate: WazzOCR made nothing because that invoice number is already
+          // on a Xero bill. Ask Unidash (the only side with the Xero connection) to
+          // delete the leftover DRAFT, then re-send the same PDF so the bill is
+          // recreated fresh — logged as one row carrying the "auto deleted" note.
+          var bill0 = (r.json.bills && r.json.bills[0]) || {};
+          if (r.code === 200 && String(bill0.status || '').toLowerCase() === 'duplicate') {
+            var number  = dupNumber_(r);
+            var cleared = number ? clearDuplicate_(number)
+                                 : { cleared: false, message: 'No invoice number in the duplicate reply.' };
+            if (cleared.cleared) {
+              var r2 = sendToWazzOCR_(att);            // fresh bill under the now-free number
+              logInbox_(msg, att, r2, CONFIG.DUP_NOTE);
+              r = r2;                                  // done-ness follows the re-send
+            } else {                                   // nothing live to delete (e.g. a voided copy) → show as-is
+              logInbox_(msg, att, r);
+            }
+          } else {
+            logInbox_(msg, att, r);
+          }
           if (r.code === 200) {                        // WazzOCR returned a verdict → done, never resend
             props.setProperty(key, String(Date.now()));
             anyProcessed = true;
@@ -145,8 +167,10 @@ function sendToWazzOCR_(att) {
  * Report one attachment's outcome to Unidash's Inbox (best-effort — a logging
  * failure must never break intake, so it swallows its own errors).
  *   r = { code, json, raw } from sendToWazzOCR_.
+ *   dupNote (optional) — set to CONFIG.DUP_NOTE when this row is the fresh bill made
+ *   after a duplicate was auto-cleared, so the Inbox shows "auto deleted old copy".
  */
-function logInbox_(msg, att, r) {
+function logInbox_(msg, att, r, dupNote) {
   if (!CONFIG.INBOX_URL) return;
   var reached = r.code === 200;                        // did WazzOCR return a verdict?
   var bill    = (r.json.bills && r.json.bills[0]) || {};
@@ -169,10 +193,50 @@ function logInbox_(msg, att, r) {
         message:     String(r.json.message || r.json.error || ''),
         bill_id:     String(xero.invoiceId || ''),
         bill_number: String(xero.invoiceNumber || ''),
+        dup_note:    String(dupNote || ''),             // '' unless this is the post-duplicate remake
       },
     });
   } catch (e) {
     Logger.log('Inbox log failed: %s', e);
+  }
+}
+
+/**
+ * The Xero invoice number a "duplicate" reply is about, so Unidash can find and
+ * delete the leftover bill. WazzOCR puts it on bills[0].bill.invoiceNo; fall back
+ * to the number named in the message ("existing bill for X"). '' if none found.
+ */
+function dupNumber_(r) {
+  var b   = (r.json.bills && r.json.bills[0]) || {};
+  var bl  = b.bill || {}, xe = b.xero || {};
+  var n = bl.invoiceNo || bl.invoiceNumber || xe.invoiceNumber || '';
+  if (!n && r.json.message) {
+    var m = String(r.json.message).match(/(?:existing bill for|bill)\s+([A-Za-z0-9][A-Za-z0-9._\/\-]{2,})/i);
+    if (m) n = m[1];
+  }
+  return String(n || '').trim();
+}
+
+/**
+ * Ask Unidash to delete the leftover DRAFT bill under this invoice number so the
+ * PDF can be sent again and created fresh. Returns { code, cleared, message };
+ * cleared is true only when a live draft was actually deleted.
+ */
+function clearDuplicate_(number) {
+  var url = CONFIG.INBOX_URL.replace(/\/inbox\/log$/, '/inbox/clear-duplicate');
+  try {
+    var res = UrlFetchApp.fetch(url, {
+      method: 'post',
+      muteHttpExceptions: true,
+      payload: { key: CONFIG.INBOX_KEY, bill_number: number },
+    });
+    var json = {};
+    try { json = JSON.parse(res.getContentText()) || {}; } catch (e) { json = {}; }
+    Logger.log('clearDuplicate "%s" → HTTP %s cleared=%s', number, res.getResponseCode(), !!json.cleared);
+    return { code: res.getResponseCode(), cleared: !!json.cleared, message: String(json.message || '') };
+  } catch (e) {
+    Logger.log('clearDuplicate failed for "%s": %s', number, e);
+    return { code: 0, cleared: false, message: String(e) };
   }
 }
 

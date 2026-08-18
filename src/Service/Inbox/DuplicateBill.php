@@ -171,6 +171,48 @@ final class DuplicateBill
     }
 
     /**
+     * External-API path: clear the leftover bill under $number so the same invoice
+     * can be sent to WazzOCR again and created fresh. Unlike autoResolve() this does
+     * NOT re-send and touches no Inbox row — the caller (the Apps Script) still holds
+     * the PDF, re-sends it, and logs the fresh result carrying CLEARED_MESSAGE. Only
+     * a live DRAFT is deleted; SUBMITTED/AUTHORISED/PAID work is left alone. When the
+     * only copy is voided/deleted there is nothing to delete (WazzOCR still treats
+     * the number as taken — that needs a WazzOCR-side change), so 'not-live' is
+     * returned and the caller does not bother re-sending.
+     * @return array{ok:bool, cleared:bool, status:string, message:string}
+     */
+    public static function clearByNumber(string $number, ?\App\Service\Xero\XeroClientInterface $xero = null): array
+    {
+        $number = trim($number);
+        if ($number === '') return ['ok' => false, 'cleared' => false, 'status' => '', 'message' => 'No invoice number given.'];
+        if (!self::enabled()) return ['ok' => false, 'cleared' => false, 'status' => '', 'message' => "Automatic clearing is off — bill {$number} left in Xero."];
+
+        try {
+            $xero  = $xero ?: XeroClientFactory::make();
+            $found = $xero->findBillByNumber($number);
+            if (empty($found['ok'])) {
+                return ['ok' => false, 'cleared' => false, 'status' => '', 'message' => "Could not look up bill {$number} in Xero: " . ($found['error'] ?? 'unknown error')];
+            }
+            if (empty($found['found'])) {
+                return ['ok' => false, 'cleared' => false, 'status' => 'not-live',
+                        'message' => "No live bill {$number} in Xero to delete — the existing copy is voided or deleted, which WazzOCR still treats as taken."];
+            }
+            $status = strtoupper((string)($found['status'] ?? ''));
+            if ($status !== 'DRAFT') {
+                return ['ok' => false, 'cleared' => false, 'status' => $status,
+                        'message' => "Bill {$number} is " . strtolower($status) . " in Xero, not a draft — left alone, nothing recreated."];
+            }
+            $del = $xero->deleteDraftBill((string)$found['invoice_id']);
+            if (empty($del['ok'])) {
+                return ['ok' => false, 'cleared' => false, 'status' => $status, 'message' => "Could not delete bill {$number} in Xero: " . ($del['error'] ?? 'unknown error')];
+            }
+            return ['ok' => true, 'cleared' => true, 'status' => 'deleted', 'message' => "Deleted bill {$number} in Xero."];
+        } catch (\Throwable $e) {
+            return ['ok' => false, 'cleared' => false, 'status' => '', 'message' => 'Clearing the duplicate failed: ' . $e->getMessage()];
+        }
+    }
+
+    /**
      * Record the outcome on the row and hand it back as the call's result. The
      * time is the app's own (Malaysia, UTC+8), like every other time in the Inbox —
      * stored timestamps stay UTC, but nothing an operator reads should be.

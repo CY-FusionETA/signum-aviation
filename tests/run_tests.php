@@ -783,6 +783,42 @@ check('  → nothing deleted', $x5->deleted, []);
 check('  → row says it is off', strpos((string)$reload($offId)['dup_action'], 'Automatic clearing is off'), 0);
 Settings::set('inbox.auto_clear_duplicates', '1');
 
+// clearByNumber (External-API path): delete the leftover bill so the PDF can be
+// re-sent and created fresh. No re-send, no Inbox row — the Apps Script does that.
+$cx = $fakeXero($DRAFT);
+$c1 = $DB::clearByNumber('HKG-GH-037-26', $cx);
+check('clearByNumber deletes a live draft', [$c1['ok'], $c1['cleared'], $cx->deleted], [true, true, ['inv-1']]);
+check('  → says what it did', $c1['message'], 'Deleted bill HKG-GH-037-26 in Xero.');
+
+// Only a voided/deleted copy exists (findBillByNumber skips it) → nothing to delete,
+// and the caller must NOT re-send (WazzOCR would just refuse again).
+$cGhost = $fakeXero(['ok'=>true,'found'=>false,'invoice_id'=>'','status'=>'','supplier'=>'','total'=>null,'currency'=>'']);
+$c2 = $DB::clearByNumber('SN030473', $cGhost);
+check('voided ghost → not-live, not cleared', [$c2['cleared'], $c2['status'], $cGhost->deleted], [false, 'not-live', []]);
+
+// A non-draft (authorised) live bill is real work → left alone.
+$cAuth = $fakeXero(['ok'=>true,'found'=>true,'invoice_id'=>'inv-9','status'=>'AUTHORISED','supplier'=>'S','total'=>1.0,'currency'=>'EUR']);
+$c3 = $DB::clearByNumber('AUTH-1', $cAuth);
+check('authorised bill is not deleted', [$c3['cleared'], $cAuth->deleted], [false, []]);
+check('  → and says why', strpos($c3['message'], 'is authorised in Xero, not a draft') !== false, true);
+
+check('clearByNumber needs a number', $DB::clearByNumber('  ', $fakeXero($DRAFT))['cleared'], false);
+check('clearByNumber reports a lookup failure',
+      $DB::clearByNumber('X', $fakeXero(['ok'=>false,'found'=>false,'invoice_id'=>'','status'=>'','supplier'=>'','total'=>null,'currency'=>'','error'=>'Xero is down']))['cleared'], false);
+
+// The fresh bill logged after clearing: Success, real link, AND the note so the
+// operator can see it was a duplicate that got auto-remade.
+$freshDup = $IL::recordDelivery([
+    'event_at'=>gmdate('Y-m-d\TH:i:s\Z'),'attachment'=>'dupredo.pdf','delivery'=>'sent',
+    'result'=>'created','ocr_message'=>'1 bill(s) processed successfully.',
+    'bill_url'=>'https://go.xero.com/View.aspx?InvoiceID=fresh','bill_number'=>'HKG-GH-037-26',
+    'dup_note'=>$DB::CLEARED_MESSAGE,
+]);
+$freshRow = \App\Db::one("SELECT * FROM inbox_events WHERE id=?", [$freshDup]);
+check('recreated bill is a success', $freshRow['ocr_status'], 'success');
+check('  → carries the auto-deleted note', $DB::note($freshRow), $DB::CLEARED_MESSAGE);
+check('  → message column stays blank (success says nothing)', $IL::plainMessage($freshRow), '');
+
 // A reply tells the caller which row to clear — that is what fires the recovery.
 // Clear the decks first: replies go to the OLDEST pending send, and the re-sends
 // above are still waiting for theirs.
