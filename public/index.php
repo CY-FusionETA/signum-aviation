@@ -664,7 +664,7 @@ function render_access_log(): void {
       <div class="tile"><div class="tnum"<?= $s['failed'] ? ' style="color:#b42318"' : '' ?>><?= $s['failed'] ?></div><div class="tlbl">Failed attempts</div></div>
     </section>
     <div class="card">
-      <p class="muted" style="margin:0 0 12px">Every sign-in: which account, from where, on what device. Visible to you only · times are Malaysia time (UTC+8).</p>
+      <p class="muted" style="margin:0 0 12px">Every sign-in — account, place, device. Visible to you only · Malaysia time (UTC+8).</p>
       <table class="grid"><thead><tr><th>When</th><th>Account</th><th>Result</th><th>IP address</th><th>Location</th><th>Device</th></tr></thead><tbody>
       <?php if (!$rows): ?>
         <tr><td colspan="6" class="muted">No sign-ins recorded yet — they appear here as people sign in.</td></tr>
@@ -745,7 +745,7 @@ function render_inbox(): void {
         <a class="btn ghost sm" href="<?= e(base()) ?>/?view=inbox" title="Reload the log — new sends and processor replies arrive continuously">Refresh</a>
       </div>
       <p class="muted" style="margin:0 0 12px">
-        Every supplier invoice the mailbox poller sends for processing is logged here — when, who sent it, the attachment, and whether the draft bill was created. Any error reported back appears in the Message column in plain English — hover it to read the processor's full reply. If the invoice number is already in Xero, Unidash clears the leftover draft bill and sends the invoice for processing again on its own — nothing to press, and no need to email it in a second time.
+        Every invoice the mailbox sends for processing. Hover a message to read the full reply. Duplicates are cleared and re-sent automatically.
         <?= $last !== '' ? ' · <b>Last checked</b> ' . e($last) : '' ?> · times are Malaysia time (UTC+8).
       </p>
       <table class="grid"><thead><tr>
@@ -772,9 +772,9 @@ function render_inbox(): void {
       ?>
         <tr>
           <td class="nowrap mono"><?= e($when ?: '—') ?><div class="muted small"><?= e($tm) ?></div></td>
-          <td><?= ($r['sender'] ?? '') !== '' ? e((string)$r['sender']) : '<span class="muted">—</span>' ?></td>
+          <td><?php $sn = trim((string)($r['sender'] ?? '')); if ($sn !== ''): ?><span class="trunc" style="max-width:210px" title="<?= e($sn) ?>"><?= e($sn) ?></span><?php else: ?><span class="muted">—</span><?php endif; ?></td>
           <td>
-            <?php if (($r['attachment'] ?? '') !== ''): ?><span class="mono" style="font-size:12px"><?= e((string)$r['attachment']) ?></span><?php else: ?><span class="muted">—</span><?php endif; ?>
+            <?php if (($r['attachment'] ?? '') !== ''): ?><span class="mono trunc" style="font-size:12px;max-width:230px" title="<?= e((string)$r['attachment']) ?>"><?= e((string)$r['attachment']) ?></span><?php else: ?><span class="muted">—</span><?php endif; ?>
             <?php if ($retryOf): ?><div class="muted small" title="Unidash cleared the duplicate bill in Xero and sent this file again by itself">↻ sent again automatically</div><?php endif; ?>
           </td>
           <td><?= $dpill((string)($r['delivery'] ?? '')) ?></td>
@@ -859,7 +859,7 @@ function render_dashboard(array $stat, array $rows, bool $connected, string $ten
           <button class="btn ghost sm simbtn" type="button" id="aisim" title="Play a demo of how the assistant reads, reasons and acts on an invoice">▷ Simulate</button>
         </div>
       </div>
-      <p class="ailede">This is what the assistant is doing behind the scenes — every supplier invoice it reads, the call it makes, and each LEON trip it files. It moves on its own as work comes in; press <b>Simulate</b> to watch one run start to finish.</p>
+      <p class="ailede">What the assistant is doing right now — invoices read, calls made, trips filed. Press <b>Simulate</b> to watch one run end to end.</p>
 
       <div class="aicounts" id="aicounts">
         <div class="aic"><b data-pulse="sent">—</b><em>delivered · 24h</em></div>
@@ -979,7 +979,7 @@ function render_trips(array $trips, bool $connected, string $tenant): void {
           <div class="dzinner">
             <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 9 12 4 17 9"/><line x1="12" y1="4" x2="12" y2="16"/></svg>
             <div class="dztext"><b>Choose files</b> or drag &amp; drop</div>
-            <div class="muted small">LEON Flight Count · CSV, XLSX or PDF · multiple files allowed</div>
+            <div class="muted small">CSV, XLSX or PDF</div>
           </div>
           <ul class="filelist" id="fileList"></ul>
         </label>
@@ -1040,7 +1040,7 @@ function render_invoices(bool $connected, string $tenant, string $tenantId): voi
     $pending = array_values(array_filter($ready, fn($r) => empty($r['invoice'])));
     $money = fn($cur, $n) => e(($cur !== '' ? $cur . ' ' : '') . number_format((float)$n, 2));
     ?>
-    <p class="lede">Trips whose supplier bills are tagged, turned into a draft <b>client sales invoice</b>: each cost is recharged (×<?= e(rtrim(rtrim(number_format((float)$cfg['markup'],2),'0'),'.')) ?>), plus a <?= e(rtrim(rtrim(number_format((float)$cfg['admin_pct'],2),'0'),'.')) ?>% admin charge<?= $cfg['support_fee']>0 ? ' and a trip-support fee' : '' ?>. Rates are set in <a class="link" href="<?= e(base()) ?>/?view=settings">Settings</a>.</p>
+    <p class="lede">Tagged trips become a draft <b>client invoice</b> — costs recharged ×<?= e(rtrim(rtrim(number_format((float)$cfg['markup'],2),'0'),'.')) ?>, plus <?= e(rtrim(rtrim(number_format((float)$cfg['admin_pct'],2),'0'),'.')) ?>% admin<?= $cfg['support_fee']>0 ? ' and a support fee' : '' ?>. Rates in <a class="link" href="<?= e(base()) ?>/?view=settings">Settings</a>.</p>
 
     <div class="banner <?= $connected ? 'on' : 'off' ?>">
       <div class="binfo"><span class="dot"></span>
@@ -1160,7 +1160,6 @@ function render_settings(bool $connected, string $tenant): void {
         <h2>AI prompt add-on</h2>
         <button type="button" class="btn primary sm" id="apadd">+ Add prompt</button>
       </div>
-      <p class="muted" style="margin:0 0 8px">Extra rules for this account only, sent to WazzOCR with every invoice (per-upload <span class="mono">aiPrompt</span>), combined with the general prompt.</p>
       <div id="aplist" class="aplist"></div>
     </section>
 
@@ -1901,8 +1900,10 @@ input[type=checkbox]{width:auto}
 .tablewrap.short{max-height:none}
 table.grid{width:100%;border-collapse:collapse;font-size:13px}
 table.grid th,table.grid td{text-align:left;padding:9px 11px;border-bottom:1px solid var(--line);vertical-align:middle}
+.trunc{display:inline-block;vertical-align:top;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 table.grid thead th{position:sticky;top:0;background:#f8fafc;z-index:1;font-size:12px;color:var(--mut);font-weight:600;white-space:nowrap}
-table.grid tbody tr:hover{background:#f8faff;cursor:pointer}
+table.grid tbody tr:hover{background:#f8faff}
+table.grid tbody#rows tr:hover{cursor:pointer}
 table.grid tbody tr:last-child td{border-bottom:0}
 th.sortable{cursor:pointer;user-select:none}th.sortable:hover{color:var(--ink)}
 th.sortable.asc::after{content:" ▲";font-size:9px}th.sortable.desc::after{content:" ▼";font-size:9px}
@@ -1935,7 +1936,8 @@ th.actcol,td.actcol{width:38px;padding-left:0;padding-right:8px;text-align:right
 .chip.green{background:#ecfdf3;color:#067647}.chip.amber{background:#fffaeb;color:#b54708}
 .chip.red{background:#fef3f2;color:#b42318}.chip.blue{background:#eff4ff;color:#1d4ed8}
 .empty{padding:26px;text-align:center;color:var(--mut);border:1px dashed var(--line);border-radius:10px}
-.billdesc{font-size:11px;color:var(--mut);max-width:230px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
+.billdesc{display:inline-block;vertical-align:top;max-width:230px;font-size:11.5px;color:var(--mut);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
+div.billdesc{display:block}
 .assignform{display:flex;gap:6px;align-items:center}
 .assignform select,.assignform input[type=text]{width:auto;min-width:130px;max-width:200px;padding:5px 8px;font-size:12px}
 
