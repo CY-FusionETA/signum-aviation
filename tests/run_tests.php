@@ -837,6 +837,12 @@ $unknown = $DB::clearByNumber('X', $mkFail([]));
 check('an unknown failure still states a wait', $unknown['retry_after'], $DB::BACKOFF_UNKNOWN_SECONDS);
 check('  → never zero (0 = poller falls back to re-OCRing every 15 min)',
       $unknown['retry_after'] > 0, true);
+// Floors, so nobody trims these back without seeing what it costs. At the poller's
+// clamp, 1h = 24 extractions a day, 2h = 12, 6h = 4.
+check('unknown backoff stays conservative (>= 2h)', $DB::BACKOFF_UNKNOWN_SECONDS >= 7200, true);
+check('reconnect backoff stays conservative (>= 6h)', $DB::BACKOFF_RECONNECT_SECONDS >= 21600, true);
+$perDay = fn(int $ra) => 1440 / min(360, max(15, (int)ceil($ra / 60)));   // poller's own formula
+check('worst case is at most 12 extractions a day', $perDay($DB::BACKOFF_UNKNOWN_SECONDS) <= 12, true);
 
 // A delete that is rate-limited leaves the bill there and must come back around.
 $cDelRl = $fakeXero($DRAFT); $cDelRl->delFail = ['ok'=>false,'error'=>'Xero is rate-limiting requests.','retryable'=>true];

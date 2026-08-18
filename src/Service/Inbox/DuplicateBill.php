@@ -40,8 +40,12 @@ final class DuplicateBill
      * a rate limit. Every retry costs a full OCR + AI extraction upstream, so a
      * failure with no stated wait must still get one — 'retry soon' on a Xero
      * outage is how you burn a day of tokens learning nothing.
+     *
+     * Deliberately slow. Waiting longer only delays a duplicate that is already
+     * sitting safe in Xero; retrying sooner spends real money to be told the same
+     * thing. Nothing is lost by being patient here, so patience is the default.
      */
-    public const BACKOFF_UNKNOWN_SECONDS   = 1800;   // 30 min — outage / transient
+    public const BACKOFF_UNKNOWN_SECONDS   = 7200;   // 2h — outage / transient
     public const BACKOFF_RECONNECT_SECONDS = 21600;  // 6h — needs a human to reconnect
 
     /** Automatic clearing on? Default on; toggle with cli/auto-clear-duplicates.php. */
