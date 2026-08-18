@@ -825,6 +825,19 @@ check('voided ghost is not retryable',     $c2['retryable'], false);
 check('authorised bill is not retryable',  $c3['retryable'], false);
 check('a successful clear is not retryable', $c1['retryable'], false);
 
+// Every retryable failure must state a wait. A retry_after of 0 makes the poller
+// fall back to its 15-minute floor and re-OCR the same PDF ~96 times a day.
+$mkFail = fn(array $extra) => $fakeXero(['ok'=>false,'found'=>false,'invoice_id'=>'','status'=>'','supplier'=>'',
+    'total'=>null,'currency'=>'','error'=>'boom'] + $extra);
+$discon = $DB::clearByNumber('X', $mkFail(['needs_reconnect'=>true]));
+check('disconnected Xero waits hours, not minutes',
+      [$discon['retryable'], $discon['retry_after'], $discon['status']],
+      [true, $DB::BACKOFF_RECONNECT_SECONDS, 'disconnected']);
+$unknown = $DB::clearByNumber('X', $mkFail([]));
+check('an unknown failure still states a wait', $unknown['retry_after'], $DB::BACKOFF_UNKNOWN_SECONDS);
+check('  → never zero (0 = poller falls back to re-OCRing every 15 min)',
+      $unknown['retry_after'] > 0, true);
+
 // A delete that is rate-limited leaves the bill there and must come back around.
 $cDelRl = $fakeXero($DRAFT); $cDelRl->delFail = ['ok'=>false,'error'=>'Xero is rate-limiting requests.','retryable'=>true];
 $c4 = $DB::clearByNumber('DEL-RL', $cDelRl);

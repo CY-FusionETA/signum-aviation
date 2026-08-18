@@ -389,7 +389,7 @@ final class XeroApiClient implements XeroClientInterface
 
         try {
             $auth = XeroOAuth::accessToken();
-            if (!$auth) return $none + ['error' => 'Xero is not connected.'];
+            if (!$auth) return $none + ['error' => 'Xero is not connected.', 'needs_reconnect' => true];
 
             $where = rawurlencode('Type=="ACCPAY" AND InvoiceNumber=="' . str_replace('"', '\"', $invoiceNumber) . '"');
             [$code, $body] = XeroOAuth::http('GET', self::API . 'Invoices?where=' . $where, [

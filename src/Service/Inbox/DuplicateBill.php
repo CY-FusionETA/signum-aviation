@@ -35,6 +35,15 @@ use App\Service\Xero\XeroClientFactory;
  */
 final class DuplicateBill
 {
+    /**
+     * How long to tell the caller to wait when Xero fails for a reason that is not
+     * a rate limit. Every retry costs a full OCR + AI extraction upstream, so a
+     * failure with no stated wait must still get one — 'retry soon' on a Xero
+     * outage is how you burn a day of tokens learning nothing.
+     */
+    public const BACKOFF_UNKNOWN_SECONDS   = 1800;   // 30 min — outage / transient
+    public const BACKOFF_RECONNECT_SECONDS = 21600;  // 6h — needs a human to reconnect
+
     /** Automatic clearing on? Default on; toggle with cli/auto-clear-duplicates.php. */
     public static function enabled(): bool
     {
@@ -205,8 +214,9 @@ final class DuplicateBill
             if (empty($found['ok'])) {
                 // A lookup that failed tells us nothing about the bill: retry unless
                 // Xero gave a definite answer.
-                return ['ok' => false, 'cleared' => false, 'retryable' => (bool)($found['retryable'] ?? true), 'status' => '',
-                        'retry_after' => \App\Service\Xero\XeroOAuth::cooldownLeft(),
+                return ['ok' => false, 'cleared' => false, 'retryable' => (bool)($found['retryable'] ?? true),
+                        'status' => !empty($found['needs_reconnect']) ? 'disconnected' : '',
+                        'retry_after' => self::waitFor($found),
                         'message' => "Could not look up bill {$number} in Xero: " . ($found['error'] ?? 'unknown error')];
             }
             if (empty($found['found'])) {
@@ -221,12 +231,27 @@ final class DuplicateBill
             $del = $xero->deleteDraftBill((string)$found['invoice_id']);
             if (empty($del['ok'])) {
                 return ['ok' => false, 'cleared' => false, 'retryable' => (bool)($del['retryable'] ?? true), 'status' => $status,
+                        'retry_after' => self::waitFor($del),
                         'message' => "Could not delete bill {$number} in Xero: " . ($del['error'] ?? 'unknown error')];
             }
             return ['ok' => true, 'cleared' => true, 'retryable' => false, 'status' => 'deleted', 'message' => "Deleted bill {$number} in Xero."];
         } catch (\Throwable $e) {
-            return ['ok' => false, 'cleared' => false, 'retryable' => true, 'status' => '', 'message' => 'Clearing the duplicate failed: ' . $e->getMessage()];
+            return ['ok' => false, 'cleared' => false, 'retryable' => true, 'status' => '',
+                    'retry_after' => self::BACKOFF_UNKNOWN_SECONDS,
+                    'message' => 'Clearing the duplicate failed: ' . $e->getMessage()];
         }
+    }
+
+    /**
+     * How long the caller should wait before spending another extraction on this.
+     * A rate limit states its own window; a disconnected Xero needs a person, so
+     * it waits hours; anything else gets a plain cooling-off period.
+     */
+    private static function waitFor(array $res): int
+    {
+        $limit = \App\Service\Xero\XeroOAuth::cooldownLeft();
+        if ($limit > 0) return $limit;
+        return !empty($res['needs_reconnect']) ? self::BACKOFF_RECONNECT_SECONDS : self::BACKOFF_UNKNOWN_SECONDS;
     }
 
     /**
