@@ -60,6 +60,9 @@ var CONFIG = {
   // Shown on the Inbox row when a duplicate is auto-cleared and the bill remade.
   // Keep this identical to Unidash's DuplicateBill::CLEARED_MESSAGE.
   DUP_NOTE:    'Duplicate invoice detected, auto deleted old copy.',
+  // Shown when the old copy could not be deleted YET (Xero rate limit / outage).
+  // The attachment is deliberately left unprocessed so the next run retries it.
+  DUP_RETRY:   'Duplicate detected — could not clear the old bill yet, will retry.',
 };
 
 /** Entry point for the time trigger. */
@@ -95,11 +98,19 @@ function run() {
           if (r.code === 200 && String(bill0.status || '').toLowerCase() === 'duplicate') {
             var number  = dupNumber_(r);
             var cleared = number ? clearDuplicate_(number)
-                                 : { cleared: false, message: 'No invoice number in the duplicate reply.' };
+                                 : { cleared: false, retryable: false, message: 'No invoice number in the duplicate reply.' };
             if (cleared.cleared) {
               var r2 = sendToWazzOCR_(att, aiPrompt);  // fresh bill under the now-free number
               logInbox_(msg, att, r2, CONFIG.DUP_NOTE);
               r = r2;                                  // done-ness follows the re-send
+            } else if (cleared.retryable) {
+              // Xero said "not now" (rate limit / outage), so the old bill is still
+              // there and nothing was recreated. Leave this attachment UNRECORDED so
+              // the next run sends it again — marking it done here loses the invoice
+              // for good, since the thread would get the processed label.
+              logInbox_(msg, att, r, CONFIG.DUP_RETRY + (cleared.message ? ' ' + cleared.message : ''));
+              anyFailed = true;
+              return;
             } else {                                   // nothing live to delete (e.g. a voided copy) → show as-is
               logInbox_(msg, att, r);
             }
@@ -236,11 +247,15 @@ function clearDuplicate_(number) {
     });
     var json = {};
     try { json = JSON.parse(res.getContentText()) || {}; } catch (e) { json = {}; }
-    Logger.log('clearDuplicate "%s" → HTTP %s cleared=%s', number, res.getResponseCode(), !!json.cleared);
-    return { code: res.getResponseCode(), cleared: !!json.cleared, message: String(json.message || '') };
+    var code = res.getResponseCode();
+    // Unidash says whether it is worth trying again; a non-200 from Unidash itself
+    // (down, bad key) is transient too, so default to retrying when it said nothing.
+    var retryable = (typeof json.retryable === 'boolean') ? json.retryable : (code !== 200);
+    Logger.log('clearDuplicate "%s" → HTTP %s cleared=%s retryable=%s', number, code, !!json.cleared, retryable);
+    return { code: code, cleared: !!json.cleared, retryable: retryable, message: String(json.message || '') };
   } catch (e) {
     Logger.log('clearDuplicate failed for "%s": %s', number, e);
-    return { code: 0, cleared: false, message: String(e) };
+    return { code: 0, cleared: false, retryable: true, message: String(e) };
   }
 }
 

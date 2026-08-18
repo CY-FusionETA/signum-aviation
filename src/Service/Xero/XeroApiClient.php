@@ -50,6 +50,40 @@ final class XeroApiClient implements XeroClientInterface
     }
 
     /** Pull a human-readable message out of a Xero error/validation response. */
+    /**
+     * Why a call failed, in words an operator can act on. A 429 carries an EMPTY
+     * body, so without the headers it degrades to 'Unknown Xero error' and reads
+     * like a bug rather than a quota that refills on its own.
+     */
+    private static function errorFor(int $code, ?array $json, string $raw): string
+    {
+        if ($code === 429) {
+            $after = (int)XeroOAuth::lastHeader('retry-after');
+            $when  = $after > 0 ? ' Try again in about ' . self::humanWait($after) . '.' : '';
+            switch (strtolower(XeroOAuth::lastHeader('x-rate-limit-problem'))) {
+                case 'day':    return "Xero's daily API limit for this organisation is used up." . $when;
+                case 'minute': return 'Too many Xero requests in the last minute.' . $when;
+                default:       return 'Xero is rate-limiting requests.' . $when;
+            }
+        }
+        return self::extractError($json, $raw);
+    }
+
+    /** True when the failure is Xero saying "not now" rather than "no". */
+    public static function isRetryableCode(int $code): bool
+    {
+        return $code === 429 || $code >= 500;
+    }
+
+    private static function humanWait(int $seconds): string
+    {
+        if ($seconds < 90) return $seconds . 's';
+        $m = (int)round($seconds / 60);
+        if ($m < 90) return $m . ' minutes';
+        $h = floor($m / 60); $r = $m % 60;
+        return $r ? "{$h}h {$r}m" : "{$h}h";
+    }
+
     private static function extractError(?array $json, string $raw): string
     {
         if (is_array($json)) {
@@ -83,7 +117,7 @@ final class XeroApiClient implements XeroClientInterface
             ]);
             $json = json_decode($body, true);
             if ($code < 200 || $code >= 300) {
-                return ['ok' => false, 'bills' => [], 'error' => self::extractError($json, $body)];
+                return ['ok' => false, 'bills' => [], 'error' => self::errorFor($code, $json, $body)];
             }
             // The org's base currency — every foreign bill is converted into it.
             $baseCurrency = self::orgBaseCurrency($auth);
@@ -364,7 +398,9 @@ final class XeroApiClient implements XeroClientInterface
                 'Accept: application/json',
             ]);
             $json = json_decode($body, true);
-            if ($code < 200 || $code >= 300) return $none + ['error' => self::extractError($json, $body)];
+            if ($code < 200 || $code >= 300) {
+                return $none + ['error' => self::errorFor($code, $json, $body), 'retryable' => self::isRetryableCode($code)];
+            }
 
             foreach ($json['Invoices'] ?? [] as $inv) {
                 $status = strtoupper((string)($inv['Status'] ?? ''));
@@ -421,7 +457,7 @@ final class XeroApiClient implements XeroClientInterface
             $now  = strtoupper((string)($json['Invoices'][0]['Status'] ?? ''));
             return ($code >= 200 && $code < 300 && $now === 'DELETED')
                 ? ['ok' => true, 'status' => 'DELETED', 'stubbed' => false]
-                : ['ok' => false, 'status' => $now, 'stubbed' => false, 'error' => self::extractError($json, $body)];
+                : ['ok' => false, 'status' => $now, 'stubbed' => false, 'retryable' => self::isRetryableCode($code), 'error' => self::errorFor($code, $json, $body)];
         } catch (\Throwable $e) {
             return ['ok' => false, 'status' => '', 'stubbed' => false, 'error' => $e->getMessage()];
         }

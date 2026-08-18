@@ -652,11 +652,13 @@ check('not pending on a created bill', $DB::isPending($rowA), false);
 $fakeXero = function (array $found, bool $delOk = true) {
     return new class($found, $delOk) extends \App\Service\Xero\XeroStubClient {
         public $deleted = [];
+        public $delFail = null;          // set to force a specific delete failure
         private $found; private $delOk;
         public function __construct(array $found, bool $delOk) { $this->found = $found; $this->delOk = $delOk; }
         public function findBillByNumber(string $n): array { return $this->found + ['invoice_number' => $n]; }
         public function deleteDraftBill(string $id): array {
             $this->deleted[] = $id;
+            if ($this->delFail !== null) return $this->delFail + ['status' => 'DRAFT', 'stubbed' => false];
             return $this->delOk ? ['ok' => true, 'status' => 'DELETED', 'stubbed' => false]
                                 : ['ok' => false, 'status' => 'DRAFT', 'stubbed' => false, 'error' => 'Xero said no'];
         }
@@ -805,6 +807,28 @@ check('  → and says why', strpos($c3['message'], 'is authorised in Xero, not a
 check('clearByNumber needs a number', $DB::clearByNumber('  ', $fakeXero($DRAFT))['cleared'], false);
 check('clearByNumber reports a lookup failure',
       $DB::clearByNumber('X', $fakeXero(['ok'=>false,'found'=>false,'invoice_id'=>'','status'=>'','supplier'=>'','total'=>null,'currency'=>'','error'=>'Xero is down']))['cleared'], false);
+
+// 'retryable' decides whether the caller may record the invoice as handled. Getting
+// this wrong is what silently dropped SN030473 on 18 Aug 2026: Xero's DAILY limit
+// refused the lookup, and the Apps Script filed the attachment as done anyway.
+$rl = $DB::clearByNumber('SN030473', $fakeXero(['ok'=>false,'found'=>false,'invoice_id'=>'','status'=>'','supplier'=>'',
+      'total'=>null,'currency'=>'','error'=>"Xero's daily API limit for this organisation is used up.",'retryable'=>true]));
+check('rate-limited lookup is retryable', [$rl['cleared'], $rl['retryable']], [false, true]);
+check('  → and names the limit', strpos($rl['message'], 'daily API limit') !== false, true);
+
+// A lookup that failed without saying why: assume retryable rather than lose it.
+check('unknown lookup failure defaults to retryable',
+      $DB::clearByNumber('X', $fakeXero(['ok'=>false,'found'=>false,'invoice_id'=>'','status'=>'','supplier'=>'','total'=>null,'currency'=>'','error'=>'boom']))['retryable'], true);
+
+// Definite answers must NOT be retried — the reply will not change on its own.
+check('voided ghost is not retryable',     $c2['retryable'], false);
+check('authorised bill is not retryable',  $c3['retryable'], false);
+check('a successful clear is not retryable', $c1['retryable'], false);
+
+// A delete that is rate-limited leaves the bill there and must come back around.
+$cDelRl = $fakeXero($DRAFT); $cDelRl->delFail = ['ok'=>false,'error'=>'Xero is rate-limiting requests.','retryable'=>true];
+$c4 = $DB::clearByNumber('DEL-RL', $cDelRl);
+check('rate-limited delete is retryable', [$c4['cleared'], $c4['retryable']], [false, true]);
 
 // The fresh bill logged after clearing: Success, real link, AND the note so the
 // operator can see it was a duplicate that got auto-remade.

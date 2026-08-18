@@ -8,3 +8,4 @@
 /vendor/
 .DS_Store
 /storage/drop/
+storage/logs/xero-calls.log

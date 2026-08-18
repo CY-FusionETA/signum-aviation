@@ -179,36 +179,45 @@ final class DuplicateBill
      * only copy is voided/deleted there is nothing to delete (WazzOCR still treats
      * the number as taken — that needs a WazzOCR-side change), so 'not-live' is
      * returned and the caller does not bother re-sending.
-     * @return array{ok:bool, cleared:bool, status:string, message:string}
+     * Every result carries 'retryable': true means Xero said "not now" (rate limit,
+     * outage) and the SAME send should be tried again later — the caller must not
+     * record the invoice as handled, or it is dropped for good. false means the
+     * answer will not change on its own (nothing live to delete, or a bill someone
+     * has already approved).
+     * @return array{ok:bool, cleared:bool, retryable:bool, status:string, message:string}
      */
     public static function clearByNumber(string $number, ?\App\Service\Xero\XeroClientInterface $xero = null): array
     {
         $number = trim($number);
-        if ($number === '') return ['ok' => false, 'cleared' => false, 'status' => '', 'message' => 'No invoice number given.'];
-        if (!self::enabled()) return ['ok' => false, 'cleared' => false, 'status' => '', 'message' => "Automatic clearing is off — bill {$number} left in Xero."];
+        if ($number === '') return ['ok' => false, 'cleared' => false, 'retryable' => false, 'status' => '', 'message' => 'No invoice number given.'];
+        if (!self::enabled()) return ['ok' => false, 'cleared' => false, 'retryable' => false, 'status' => '', 'message' => "Automatic clearing is off — bill {$number} left in Xero."];
 
         try {
             $xero  = $xero ?: XeroClientFactory::make();
             $found = $xero->findBillByNumber($number);
             if (empty($found['ok'])) {
-                return ['ok' => false, 'cleared' => false, 'status' => '', 'message' => "Could not look up bill {$number} in Xero: " . ($found['error'] ?? 'unknown error')];
+                // A lookup that failed tells us nothing about the bill: retry unless
+                // Xero gave a definite answer.
+                return ['ok' => false, 'cleared' => false, 'retryable' => (bool)($found['retryable'] ?? true), 'status' => '',
+                        'message' => "Could not look up bill {$number} in Xero: " . ($found['error'] ?? 'unknown error')];
             }
             if (empty($found['found'])) {
-                return ['ok' => false, 'cleared' => false, 'status' => 'not-live',
+                return ['ok' => false, 'cleared' => false, 'retryable' => false, 'status' => 'not-live',
                         'message' => "No live bill {$number} in Xero to delete — the existing copy is voided or deleted, which WazzOCR still treats as taken."];
             }
             $status = strtoupper((string)($found['status'] ?? ''));
             if ($status !== 'DRAFT') {
-                return ['ok' => false, 'cleared' => false, 'status' => $status,
+                return ['ok' => false, 'cleared' => false, 'retryable' => false, 'status' => $status,
                         'message' => "Bill {$number} is " . strtolower($status) . " in Xero, not a draft — left alone, nothing recreated."];
             }
             $del = $xero->deleteDraftBill((string)$found['invoice_id']);
             if (empty($del['ok'])) {
-                return ['ok' => false, 'cleared' => false, 'status' => $status, 'message' => "Could not delete bill {$number} in Xero: " . ($del['error'] ?? 'unknown error')];
+                return ['ok' => false, 'cleared' => false, 'retryable' => (bool)($del['retryable'] ?? true), 'status' => $status,
+                        'message' => "Could not delete bill {$number} in Xero: " . ($del['error'] ?? 'unknown error')];
             }
-            return ['ok' => true, 'cleared' => true, 'status' => 'deleted', 'message' => "Deleted bill {$number} in Xero."];
+            return ['ok' => true, 'cleared' => true, 'retryable' => false, 'status' => 'deleted', 'message' => "Deleted bill {$number} in Xero."];
         } catch (\Throwable $e) {
-            return ['ok' => false, 'cleared' => false, 'status' => '', 'message' => 'Clearing the duplicate failed: ' . $e->getMessage()];
+            return ['ok' => false, 'cleared' => false, 'retryable' => true, 'status' => '', 'message' => 'Clearing the duplicate failed: ' . $e->getMessage()];
         }
     }
 

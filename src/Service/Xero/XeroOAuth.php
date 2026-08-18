@@ -241,19 +241,61 @@ final class XeroOAuth
     /** @return array{0:int,1:string} [http_code, body] */
     public static function http(string $method, string $url, array $headers, ?string $body = null): array
     {
+        self::$lastHeaders = [];
         $ch = curl_init($url);
         curl_setopt_array($ch, [
             CURLOPT_CUSTOMREQUEST  => $method,
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_HTTPHEADER     => $headers,
             CURLOPT_TIMEOUT        => 30,
+            // Keep the response headers: a 429 says WHICH limit was hit and for
+            // how long only in 'x-rate-limit-problem' / 'retry-after' — its body
+            // is empty, so without these a rate limit is indistinguishable from
+            // an unknown failure.
+            CURLOPT_HEADERFUNCTION => function ($ch, string $line): int {
+                $len = strlen($line);
+                $bits = explode(':', $line, 2);
+                if (count($bits) === 2) self::$lastHeaders[strtolower(trim($bits[0]))] = trim($bits[1]);
+                return $len;
+            },
         ]);
         if ($body !== null) curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
         $resp = curl_exec($ch);
         $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $err  = curl_error($ch);
         curl_close($ch);
+        self::logCall($method, $url, $code);
         if ($resp === false) throw new \RuntimeException('Network error calling Xero: ' . $err);
         return [$code, (string)$resp];
+    }
+
+    /** Response headers of the last http() call, lower-cased keys. */
+    private static array $lastHeaders = [];
+
+    /** One header from the last http() call ('' when absent). */
+    public static function lastHeader(string $name): string
+    {
+        return (string)(self::$lastHeaders[strtolower($name)] ?? '');
+    }
+
+    /**
+     * Append one line per Xero call. Xero allows 5000 calls per organisation per
+     * day and gives no breakdown of who spent them, so when the quota runs out
+     * (429, x-rate-limit-problem: day) this file is the only way to see what did
+     * it. Endpoint only — no query strings, no bodies, nothing sensitive.
+     *   sort/count a day:  awk '{print $3, $4}' storage/logs/xero-calls.log | sort | uniq -c | sort -rn
+     */
+    private static function logCall(string $method, string $url, int $code): void
+    {
+        try {
+            $path = (string)parse_url($url, PHP_URL_PATH);
+            $left = self::lastHeader('x-daylimit-remaining');
+            $line = sprintf("%s %s %s %d%s\n", gmdate('Y-m-d\TH:i:s\Z'), $method, $path, $code,
+                            $left !== '' ? ' day-left=' . $left : '');
+            $dir  = dirname(__DIR__, 3) . '/storage/logs';
+            if (is_dir($dir) && is_writable($dir)) @file_put_contents($dir . '/xero-calls.log', $line, FILE_APPEND | LOCK_EX);
+        } catch (\Throwable $e) {
+            // Never let instrumentation break a Xero call.
+        }
     }
 }
