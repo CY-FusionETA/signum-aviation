@@ -1151,64 +1151,113 @@ function render_settings(bool $connected, string $tenant): void {
     </section>
 
     <?php
-    // AI prompt add-on: operator-managed extraction rules, sent to WazzOCR on every
-    // upload as the per-request aiPrompt field. At least one (blank) row to type into.
+    // AI prompt add-on: extraction rules sent to WazzOCR on every upload as the
+    // per-request aiPrompt field. Folded list; Edit / Add opens a pop-out modal.
     $apBlocks = \App\Service\Wazz\AiPrompt::blocks();
-    if (!$apBlocks) $apBlocks = [['title' => '', 'body' => '', 'enabled' => true]];
     ?>
     <section class="card aiprompt">
-      <div class="chead"><h2>AI prompt add-on</h2></div>
-      <p class="muted" style="margin:0 0 14px">
-        Extra extraction rules for this account, sent to WazzOCR with <b>every invoice</b> the poller uploads (WazzOCR's per-upload <span class="mono">aiPrompt</span>). Combined with WazzOCR's own general and account-level prompts — enabled blocks only. Use it for things like which text is the invoice number, currency handling, or supplier-specific account codes.
-      </p>
-      <form method="post" action="<?= e(base()) ?>/settings/ai-prompt">
-        <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>">
-        <div id="apblocks">
-          <?php foreach ($apBlocks as $i => $b): ?>
-          <div class="apblock">
-            <div class="aprow">
-              <input name="p_title[<?= $i ?>]" value="<?= e((string)$b['title']) ?>" placeholder="Title (e.g. Currency)">
-              <label class="chk"><input type="checkbox" name="p_enabled[<?= $i ?>]" <?= !empty($b['enabled']) ? 'checked' : '' ?>> On</label>
-              <button type="button" class="btn ghost sm apdel">Remove</button>
-            </div>
-            <textarea name="p_body[<?= $i ?>]" rows="3" placeholder="Prompt text…"><?= e((string)$b['body']) ?></textarea>
-          </div>
-          <?php endforeach; ?>
-        </div>
-        <div class="aprowbtns">
-          <button type="button" class="btn ghost sm" id="apadd">+ Add prompt</button>
-          <button class="btn primary">Save AI prompt</button>
-        </div>
-      </form>
+      <div class="chead">
+        <h2>AI prompt add-on</h2>
+        <button type="button" class="btn primary sm" id="apadd">+ Add prompt</button>
+      </div>
+      <p class="muted" style="margin:0 0 8px">Extra rules for this account only, sent to WazzOCR with every invoice (per-upload <span class="mono">aiPrompt</span>), combined with the general prompt.</p>
+      <div id="aplist" class="aplist"></div>
     </section>
+
+    <!-- Hidden form: Save/Delete in the modal persist the whole set through it. -->
+    <form id="apform" method="post" action="<?= e(base()) ?>/settings/ai-prompt" hidden>
+      <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>">
+      <div id="apfields"></div>
+    </form>
+
+    <!-- Edit / add modal -->
+    <div id="apmodal" class="modal" hidden>
+      <div class="mback" data-apclose></div>
+      <div class="mcard" role="dialog" aria-modal="true">
+        <div class="mhead"><h3 id="apmtitle">Edit prompt block</h3><button class="mx" type="button" data-apclose aria-label="Close">×</button></div>
+        <div class="mbody">
+          <label class="aplbl">TITLE</label>
+          <input id="ap_title" class="apinput" placeholder="e.g. Currency">
+          <label class="aplbl" style="margin-top:14px">PROMPT TEXT</label>
+          <textarea id="ap_body" class="apinput" rows="9" placeholder="Prompt text…"></textarea>
+          <label class="chk" style="margin-top:12px"><input type="checkbox" id="ap_enabled"> Enabled (included in the prompt)</label>
+        </div>
+        <div class="mfoot" style="justify-content:space-between">
+          <button type="button" class="btn danger" id="ap_delete">Delete</button>
+          <button type="button" class="btn primary" id="ap_save">Save</button>
+        </div>
+      </div>
+    </div>
     <style>
-      .aiprompt .apblock{padding:12px 0;border-top:1px solid var(--line)}
-      .aiprompt .apblock:first-child{border-top:0;padding-top:0}
-      .aiprompt .aprow{display:flex;align-items:center;gap:12px;margin-bottom:8px}
-      .aiprompt .aprow input[name^="p_title"]{flex:1;min-width:0}
-      .aiprompt .aprow .chk{white-space:nowrap;color:var(--mut);font-size:13px}
-      .aiprompt textarea{width:100%;font:inherit;padding:9px 11px;border:1px solid var(--line);border-radius:8px;resize:vertical}
-      .aiprompt .aprowbtns{display:flex;justify-content:space-between;gap:12px;margin-top:14px}
+      .aiprompt .chead{display:flex;justify-content:space-between;align-items:center}
+      .aplist{display:flex;flex-direction:column}
+      .aprow2{display:grid;grid-template-columns:minmax(150px,230px) 56px 1fr auto;align-items:center;gap:14px;padding:12px 2px;border-top:1px solid var(--line)}
+      .aprow2:first-child{border-top:0}
+      .aptitle{font-weight:600;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      .appill{font-size:12px;font-weight:600;border-radius:999px;padding:2px 9px;text-align:center;white-space:nowrap}
+      .appill.on{color:#0f7a34;background:#dcfce7}.appill.off{color:var(--mut);background:#f1f5f9}
+      .apprev{color:var(--mut);font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      .aplink{background:none;border:0;color:var(--accent);font-weight:600;cursor:pointer;font-size:13px;padding:4px 6px}
+      .aplink:hover{text-decoration:underline}
+      .apempty{padding:14px 2px;font-size:13px}
+      .aplbl{display:block;font-size:11px;font-weight:700;letter-spacing:.04em;color:var(--mut)}
+      .apinput{width:100%;font:inherit;padding:9px 11px;border:1px solid var(--line);border-radius:8px;margin-top:6px}
+      textarea.apinput{resize:vertical;line-height:1.5}
+      @media(max-width:640px){.aprow2{grid-template-columns:1fr auto;gap:6px 10px}.apprev{grid-column:1/-1;order:3}}
     </style>
     <script>
     (function(){
-      var wrap = document.getElementById('apblocks'); if(!wrap) return;
-      var idx = <?= count($apBlocks) ?>;
-      var add = document.getElementById('apadd');
-      add && add.addEventListener('click', function(){
-        var d = document.createElement('div'); d.className = 'apblock';
-        d.innerHTML =
-          '<div class="aprow"><input name="p_title['+idx+']" placeholder="Title (e.g. Currency)">'
-          + '<label class="chk"><input type="checkbox" name="p_enabled['+idx+']" checked> On</label>'
-          + '<button type="button" class="btn ghost sm apdel">Remove</button></div>'
-          + '<textarea name="p_body['+idx+']" rows="3" placeholder="Prompt text…"></textarea>';
-        wrap.appendChild(d); idx++;
+      var listEl = document.getElementById('aplist'); if(!listEl) return;
+      var blocks = (<?= json_encode(array_values($apBlocks), JSON_UNESCAPED_UNICODE) ?>).map(function(b){
+        return { title:String(b.title||''), body:String(b.body||''), enabled:!!b.enabled };
       });
-      wrap.addEventListener('click', function(e){
-        if(e.target && e.target.classList.contains('apdel')){
-          var b = e.target.closest('.apblock'); if(b) b.remove();
-        }
+      var modal=document.getElementById('apmodal');
+      var tI=document.getElementById('ap_title'), bI=document.getElementById('ap_body'), eI=document.getElementById('ap_enabled');
+      var delBtn=document.getElementById('ap_delete'), titleEl=document.getElementById('apmtitle');
+      var editing=-1;
+      function esc(s){var d=document.createElement('div');d.textContent=s==null?'':String(s);return d.innerHTML;}
+      function preview(s){s=String(s||'').replace(/\s+/g,' ').trim();return s.length>90?s.slice(0,90)+'…':s;}
+      function render(){
+        if(!blocks.length){ listEl.innerHTML='<div class="apempty muted">No prompts yet — click “Add prompt” to create one.</div>'; return; }
+        listEl.innerHTML = blocks.map(function(b,i){
+          return '<div class="aprow2">'
+            + '<div class="aptitle">'+esc(b.title||'(untitled)')+'</div>'
+            + '<span class="appill '+(b.enabled?'on':'off')+'">'+(b.enabled?'• on':'off')+'</span>'
+            + '<div class="apprev">'+esc(preview(b.body))+'</div>'
+            + '<button type="button" class="aplink" data-edit="'+i+'">Edit</button>'
+            + '</div>';
+        }).join('');
+      }
+      function open(i){
+        editing=i;
+        var b = i>=0 ? blocks[i] : {title:'',body:'',enabled:true};
+        titleEl.textContent = i>=0 ? 'Edit prompt block' : 'New prompt block';
+        tI.value=b.title; bI.value=b.body; eI.checked=!!b.enabled;
+        delBtn.style.display = i>=0 ? '' : 'none';
+        modal.hidden=false; tI.focus();
+      }
+      function close(){ modal.hidden=true; editing=-1; }
+      function persist(){
+        var wrap=document.getElementById('apfields'); wrap.innerHTML='';
+        blocks.forEach(function(b,i){
+          var t=document.createElement('input'); t.type='hidden'; t.name='p_title['+i+']'; t.value=b.title; wrap.appendChild(t);
+          var ta=document.createElement('textarea'); ta.name='p_body['+i+']'; ta.value=b.body; ta.hidden=true; wrap.appendChild(ta);
+          if(b.enabled){ var en=document.createElement('input'); en.type='hidden'; en.name='p_enabled['+i+']'; en.value='1'; wrap.appendChild(en); }
+        });
+        document.getElementById('apform').submit();
+      }
+      document.getElementById('apadd').addEventListener('click', function(){ open(-1); });
+      listEl.addEventListener('click', function(e){ var t=e.target; if(t && t.dataset && t.dataset.edit!==undefined) open(parseInt(t.dataset.edit,10)); });
+      document.getElementById('ap_save').addEventListener('click', function(){
+        var b={ title:tI.value.trim(), body:bI.value, enabled:eI.checked };
+        if(b.body.trim()===''){ if(editing<0){ close(); return; } blocks.splice(editing,1); persist(); return; }
+        if(editing>=0) blocks[editing]=b; else blocks.push(b);
+        persist();
       });
+      delBtn.addEventListener('click', function(){ if(editing>=0){ blocks.splice(editing,1); persist(); } });
+      Array.prototype.forEach.call(modal.querySelectorAll('[data-apclose]'), function(x){ x.addEventListener('click', close); });
+      document.addEventListener('keydown', function(e){ if(e.key==='Escape' && !modal.hidden) close(); });
+      render();
     })();
     </script>
     <?php
