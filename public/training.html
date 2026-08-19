@@ -155,10 +155,10 @@ const XU='xero.com &middot; Signum Aviation DEMO';
 function stepInfo(){
   if(!S.imported) return {n:1,ttl:'Import your flight schedule',target:'btnImport',tab:'trips',
     body:'This is your flight schedule from LEON — every trip, aircraft and route your operation flew. Importing it gives the system a master list that each supplier bill will later be matched against. Download the file if you need it, then click <b>Import</b>.'};
-  if(!S.ruleSet) return {n:2,ttl:'Teach the reader a house rule',target:'btnRule',tab:'settings',
-    body:'Before invoices arrive, you can add <b>AI prompt</b> rules that ride along with every invoice. Add the <b>Currency</b> rule so each bill is created in the currency printed on the invoice — not your base currency. Click <b>Add currency rule</b>.'};
+  if(!S.ruleSet) return {n:2,ttl:'Teach the reader your house rules',target:'btnRule',tab:'settings',
+    body:'Before invoices arrive, you can add <b>AI prompt</b> rules that ride along with every invoice. Write anything about how a bill should be created — which account to code it to, how the supplier should be named, what belongs in the reference — in plain English. Click <b>Add prompt rule</b>.'};
   if(!S.arrived) return {n:3,ttl:'Invoices arrive and process themselves',target:'btnSend',tab:'inbox',
-    body:'When a ground handler bills you, they email the invoice to your mailbox. The poller picks it up, sends it to WazzOCR, and a draft bill appears in Xero — <b>automatically</b>, no button to press. Every send is logged here in the <b>Inbox</b>. Click <b>Send the sample invoices</b> to watch it happen.'};
+    body:'When a ground handler bills you, they email the invoice to your mailbox. The poller picks it up, the AI reads it, and a draft bill appears in Xero — <b>automatically</b>, no button to press. Every send is logged here in the <b>Inbox</b>. Click <b>Send the sample invoices</b> to watch it happen.'};
   if(!(S.tagSN&&S.tagHKG)) return {n:4,ttl:'Tag the bills to their trip',target:(!S.tagSN?'btnTagSN':'btnTagHKG'),tab:'bills',
     body:'Each bill has been auto-matched to the trip it belongs to, using the aircraft tail and airport. <b>Tag</b> writes that trip number onto the bill so the cost is tied to the right trip — ready to be recharged to the client. Click <b>Tag</b> on each bill.'};
   if(!S.approved) return {n:5,ttl:'Approve the fully-costed trip',target:'btnApprove',tab:'trips',
@@ -217,12 +217,12 @@ function views(){
 
   settings:`<h1>Settings</h1><p class="sub">Xero connection, invoice rules, and the AI prompt add-on.</p>
     <div class="card aiprompt">
-      <div class="chead"><h3 class="ctitle">AI prompt add-on</h3>${S.ruleSet?'<span class="pilln">1 active</span>':`<button class="btn sm" id="btnRule" onclick="doRule()">+ Add currency rule</button>`}</div>
-      <p style="color:var(--mut);font-size:13px;margin:0 0 8px">Extra rules for this account only, sent to WazzOCR with every invoice, combined with the general prompt.</p>
+      <div class="chead"><h3 class="ctitle">AI prompt add-on</h3>${S.ruleSet?'<span class="pilln">1 active</span>':`<button class="btn sm" id="btnRule" onclick="doRule()">+ Add prompt rule</button>`}</div>
+      <p style="color:var(--mut);font-size:13px;margin:0 0 8px">Extra rules for this account only, sent with every invoice and combined with the general prompt.</p>
       <div class="aplist">
         ${S.ruleSet
-          ? `<div class="row"><div class="aptitle">Currency</div><span class="pillg">• on</span><div class="apprev">CURRENCY: create the Xero bill in the currency printed on the invoice (USD, EUR, GBP…), not the base currency.</div><a class="lnkv">Edit</a></div>`
-          : `<div class="empty" style="padding:16px 2px;text-align:left">No prompts yet — add the <b>Currency</b> rule so bills are read in the right currency.</div>`}
+          ? `<div class="row"><div class="aptitle">Bill creation rules</div><span class="pillg">• on</span><div class="apprev">Your own rules, in plain English — e.g. code ground-handling charges to the handling account, keep the supplier&rsquo;s own invoice number as the bill reference, and match the supplier to the name printed on the invoice.</div><a class="lnkv">Edit</a></div>`
+          : `<div class="empty" style="padding:16px 2px;text-align:left">No prompts yet — add a rule describing how your bills should be created.</div>`}
       </div>
     </div>`,
 
