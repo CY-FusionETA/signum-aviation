@@ -53,7 +53,7 @@ var CONFIG = {
   ERROR_LABEL:     'skyledger-error',
 
   ALLOWED_EXT: ['pdf'],       // the External API is PDF-only
-  MIN_BYTES:   8 * 1024,      // skip tiny inline PDFs (rare, but keeps noise out)
+  MIN_BYTES:   1024,          // skip tiny inline PDFs; a real text-only invoice can be ~2 KB
   MAX_THREADS_PER_RUN: 20,
   SCAN_DAYS:   3,             // only scan threads active in the last N days (Gmail quota saver)
 
