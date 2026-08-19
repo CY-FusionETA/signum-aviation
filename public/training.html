@@ -164,7 +164,7 @@ function stepInfo(){
   if(!S.approved) return {n:5,ttl:'Approve the fully-costed trip',target:'btnApprove',tab:'trips',
     body:'Once every leg of a trip has its supplier bill, the trip is fully costed. <b>Approve</b> locks in those costs and automatically raises the <b>client invoice</b> — the supplier costs recharged, plus your admin fee. Trip <b>99751</b> is ready.'};
   return {n:6,ttl:'Done — invoice raised! 🎉',target:null,tab:'invoices',
-    body:'That’s the whole loop: an invoice arrives by email → the Inbox reads it and creates the bill on its own → you tag it to its trip → approve → the client invoice is raised automatically. If the same invoice comes twice, the Inbox clears the old copy and remakes it — nothing to clean up.'};
+    body:'That’s the whole loop: an invoice arrives by email → the Inbox reads it and creates the bill on its own → you tag it to its trip → approve → the client invoice is raised automatically.'};
 }
 
 function aiwork(){
