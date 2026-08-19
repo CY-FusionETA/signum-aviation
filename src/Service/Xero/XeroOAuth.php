@@ -299,19 +299,39 @@ final class XeroOAuth
     }
 
     /**
-     * Append one line per Xero call. Xero allows 5000 calls per organisation per
-     * day and gives no breakdown of who spent them, so when the quota runs out
-     * (429, x-rate-limit-problem: day) this file is the only way to see what did
-     * it. Endpoint only — no query strings, no bodies, nothing sensitive.
-     *   sort/count a day:  awk '{print $3, $4}' storage/logs/xero-calls.log | sort | uniq -c | sort -rn
+     * Append one line per Xero call, with every rate-limit counter Xero returns.
+     * Xero gives no breakdown of who spent the quota, so when it runs out this
+     * file is the only way to see what did it. Endpoint only — no query strings,
+     * no bodies, nothing sensitive. A line reads:
+     *
+     *   2026-08-19T10:22:02Z GET /api.xro/2.0/Invoices 429 day-left=0 min-left=57 \
+     *   appmin-left=9987 problem=day retry-after=12345
+     *
+     *   day-left     X-DayLimit-Remaining     — 5000 a day, this app + this org
+     *   min-left     X-MinLimit-Remaining     — 60 a minute, this app + this org
+     *   appmin-left  X-AppMinLimit-Remaining  — 10000 a minute across every org
+     *   problem      x-rate-limit-problem     — which of the three a 429 tripped
+     *   retry-after  seconds until it frees   — only on a 429
+     *
+     *   spend by endpoint:  awk '{print $2, $3}' storage/logs/xero-calls.log | sort | uniq -c | sort -rn
+     *   quota over time:    grep day-left storage/logs/xero-calls.log | tail -40
      */
     private static function logCall(string $method, string $url, int $code): void
     {
         try {
             $path = (string)parse_url($url, PHP_URL_PATH);
-            $left = self::lastHeader('x-daylimit-remaining');
-            $line = sprintf("%s %s %s %d%s\n", gmdate('Y-m-d\TH:i:s\Z'), $method, $path, $code,
-                            $left !== '' ? ' day-left=' . $left : '');
+            $bits = '';
+            foreach ([
+                'day-left'    => 'x-daylimit-remaining',
+                'min-left'    => 'x-minlimit-remaining',
+                'appmin-left' => 'x-appminlimit-remaining',
+                'problem'     => 'x-rate-limit-problem',
+                'retry-after' => 'retry-after',
+            ] as $label => $header) {
+                $v = self::lastHeader($header);
+                if ($v !== '') $bits .= ' ' . $label . '=' . $v;
+            }
+            $line = sprintf("%s %s %s %d%s\n", gmdate('Y-m-d\TH:i:s\Z'), $method, $path, $code, $bits);
             $dir  = dirname(__DIR__, 3) . '/storage/logs';
             if (is_dir($dir) && is_writable($dir)) @file_put_contents($dir . '/xero-calls.log', $line, FILE_APPEND | LOCK_EX);
         } catch (\Throwable $e) {
