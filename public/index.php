@@ -767,7 +767,7 @@ function render_inbox(): void {
         <?= $last !== '' ? ' · <b>Last checked</b> ' . e($last) : '' ?> · times are Malaysia time (UTC+8).
       </p>
       <table class="grid"><thead><tr>
-        <th>When</th><th>Sender</th><th>Attachment</th><th>Delivered</th><th>Bill created</th><th>Message</th>
+        <th>When</th><th>Sender</th><th>Attachment</th><th>Processed</th><th>Bill created</th><th>Message</th>
       </tr></thead><tbody>
       <?php if (!$rows): ?>
         <tr><td colspan="6" class="muted">Nothing yet — entries appear here as invoice emails arrive and are sent for processing.</td></tr>
