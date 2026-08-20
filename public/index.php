@@ -1333,9 +1333,12 @@ function render_bills(bool $connected, string $tenant, string $tenantId): void {
     $allTrips = TripRepo::all();
     $c = ['pulled'=>count($bills),'matched'=>0,'tagged'=>0,'approved'=>0,'ambiguous'=>0,'review'=>0];
     foreach ($bills as $b) { $s=(string)$b['match_status']; if(isset($c[$s]))$c[$s]++; }
-    $bpill = function(string $s): string {
+    $bpill = function(string $s, string $why = ''): string {
         $m = ['approved'=>['green','Approved'],'tagged'=>['blue','Tagged'],'matched'=>['blue','Matched'],'ambiguous'=>['amber','Ambiguous'],'review'=>['gray','Review']];
         [$cl,$t] = $m[$s] ?? ['gray', ucfirst($s)];
+        // A bill the matcher could not place needs someone to key a trip number in.
+        // Gray "Review" reads as "nothing to do here", so say it in red instead.
+        if ($why !== '' && $s === 'review') { $cl = 'red'; $t = "Can't match"; }
         return '<span class="pill '.$cl.'">'.e($t).'</span>';
     };
     // The bill's own status in Xero (distinct from the tag/approve workflow above).
@@ -1361,7 +1364,7 @@ function render_bills(bool $connected, string $tenant, string $tenantId): void {
           <span class="chip"><?= $c['pulled'] ?> pulled</span>
           <span class="chip blue"><?= $c['matched'] + $c['tagged'] ?> to approve</span>
           <span class="chip green"><?= $c['approved'] ?> approved</span>
-          <span class="chip amber"><?= $c['ambiguous'] + $c['review'] ?> need review</span>
+          <span class="chip red"><?= $c['ambiguous'] + $c['review'] ?> can't match</span>
         </div>
       </div>
 
@@ -1427,8 +1430,13 @@ function render_bills(bool $connected, string $tenant, string $tenantId): void {
                 <?php if ($why !== ''): ?><div class="billdesc" style="max-width:320px" title="<?= e($why) ?>"><?= e(mb_strimwidth($why, 0, 80, '…')) ?></div><?php endif; ?>
               <?php endif; ?></td>
             <td><?= $xpill((string)($b['xero_status'] ?? '')) ?></td>
-            <?php // An approval hold is shown only on hover — it is an internal switch, not a bill state. ?>
-            <td<?= !empty($b['approval_hold']) ? ' title="Approval hold — refreshing will not mark this bill approved from Xero; approve it from the Trips tab"' : '' ?>><?= $bpill((string)$b['match_status']) ?><?= !empty($b['xero_last_error']) ? ' <span class="warnmark" title="'.e($b['xero_last_error']).'">!</span>' : '' ?></td>
+            <?php // An approval hold is shown only on hover — it is an internal switch, not a bill state.
+              $why = trim((string)($b['match_reason'] ?? '')); ?>
+            <td<?= !empty($b['approval_hold']) ? ' title="Approval hold — refreshing will not mark this bill approved from Xero; approve it from the Trips tab"' : '' ?>><?= $bpill((string)$b['match_status'], $why) ?><?php
+              // Two different failures, so two separate marks: why it did not match,
+              // and why the last push to Xero was rejected.
+              if ($why !== ''): ?> <span class="warnmark" title="<?= e($why) ?>">!</span><?php endif;
+              ?><?= !empty($b['xero_last_error']) ? ' <span class="warnmark" title="'.e($b['xero_last_error']).'">!</span>' : '' ?></td>
             <td><?php $rm = trim((string)($b['remarks'] ?? '')); if ($rm !== ''): ?><span class="billdesc" title="<?= e($rm) ?>"><?= e(mb_strimwidth($rm, 0, 40, '…')) ?></span><?php else: ?><span class="muted">—</span><?php endif; ?></td>
             <td class="nowrap">
               <?php if ($b['match_status']==='approved'): ?>
