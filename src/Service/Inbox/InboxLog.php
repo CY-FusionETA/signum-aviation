@@ -369,9 +369,34 @@ final class InboxLog
     }
 
     /** Note that the poller ran (even an idle minute), for a liveness indicator. */
-    public static function heartbeat(): void
+    /**
+     * The Code.gs this app expects to be talking to. integrations/gmail-intake is
+     * Apps Script, NOT server code — a repo pull does not deploy it, so a change
+     * here is live only once someone pastes the file into the Apps Script project.
+     * Keep this identical to SCRIPT_VERSION in Code.gs and bump both together.
+     */
+    public const EXPECTED_SCRIPT_VERSION = '2026-08-20';
+
+    public static function heartbeat(string $version = ''): void
     {
         Settings::set('inbox.last_run', gmdate('Y-m-d H:i:s'));
+        // An older Code.gs sends no version at all; record that as 'unknown' rather
+        // than leaving whatever the last good paste reported standing.
+        Settings::set('inbox.script_version', trim($version) !== '' ? trim($version) : 'unknown');
+    }
+
+    /**
+     * Which Code.gs is actually running, and whether it is the one this app was
+     * built against. @return array{version:string, current:bool, known:bool}
+     */
+    public static function scriptStatus(): array
+    {
+        $v = (string)Settings::get('inbox.script_version', '');
+        return [
+            'version' => $v,
+            'known'   => $v !== '' && $v !== 'unknown',
+            'current' => $v === self::EXPECTED_SCRIPT_VERSION,
+        ];
     }
 
     public static function lastRun(): string

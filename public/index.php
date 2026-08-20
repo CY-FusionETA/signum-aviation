@@ -176,7 +176,9 @@ if ($path === '/inbox/log' && $method === 'POST') {
     $key   = (string)(Settings::get('drop.key', '') ?: cfg('drop.key', ''));
     $given = (string)($_POST['key'] ?? ($_GET['key'] ?? ''));
     if ($key === '' || !hash_equals($key, $given)) { http_response_code(403); exit('Forbidden'); }
-    InboxLog::heartbeat();                                  // the poller ran
+    // The poller ran — and says which Code.gs it is running, so the Inbox can
+    // flag an Apps Script project still on an older paste.
+    InboxLog::heartbeat((string)($_POST['version'] ?? ''));
     if (empty($_POST['heartbeat'])) {                       // …and it sent an attachment
         $billId = (string)($_POST['bill_id'] ?? '');
         InboxLog::recordDelivery([
@@ -708,6 +710,7 @@ function render_inbox(): void {
     $s    = InboxLog::stats();
     $rows = InboxLog::rows(200);
     $last = local_dt(InboxLog::lastRun(), 'd M Y H:i');
+    $script = InboxLog::scriptStatus();
     $dpill = function (string $d): string {
         if ($d === 'sent')    return '<span class="pill green">Sent</span>';
         if ($d === 'failed')  return '<span class="pill red">Failed</span>';
@@ -772,6 +775,19 @@ function render_inbox(): void {
         Hover a message to read the full reply. Duplicates are cleared and re-sent automatically.
         <?= $last !== '' ? ' · <b>Last checked</b> ' . e($last) : '' ?> · times are Malaysia time (UTC+8).
       </p>
+      <?php // The Gmail script lives in Apps Script, not in this repo — a deploy here does
+            // not update it. It reports its own version on every heartbeat, so a project
+            // still running an older paste can be named instead of guessed at.
+            if ($last !== '' && !$script['current']): ?>
+        <div class="empty" style="border-color:#fedf89;background:#fffaeb;color:#b54708;margin:0 0 12px">
+          <b>The Gmail script is out of date.</b>
+          The mailbox is being checked, but by
+          <?= $script['known'] ? 'version ' . e($script['version']) : 'a Code.gs old enough that it does not report its version' ?>,
+          not <?= e(InboxLog::EXPECTED_SCRIPT_VERSION) ?>. Newer behaviour — including logging emails that
+          arrive with no PDF attached — stays off until <code>integrations/gmail-intake/Code.gs</code>
+          is pasted into the Apps Script project and saved.
+        </div>
+      <?php endif; ?>
       <table class="grid"><thead><tr>
         <th>When</th><th>Sender</th><th>Attachment</th><th>Processed</th><th>Bill created</th><th>Message</th>
       </tr></thead><tbody>

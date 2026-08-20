@@ -38,6 +38,15 @@
  *   - Gmail filter that applies CONFIG.SOURCE_LABEL to supplier-invoice emails.
  */
 
+/**
+ * Bumped whenever this file changes in a way that matters. It rides along on the
+ * heartbeat so Unidash's Inbox tab can say whether the code pasted into Apps
+ * Script is the current one — this file is NOT deployed by a repo pull, and
+ * "did the paste happen?" is otherwise unanswerable from the outside.
+ * Keep it identical to InboxLog::EXPECTED_SCRIPT_VERSION.
+ */
+var SCRIPT_VERSION = '2026-08-20';
+
 var CONFIG = {
   // WazzOCR External API — where the PDF is sent and the bill is created.
   WAZZOCR_API_BASE: 'https://wazzocr.fusioneta.com.my',              // e.g. https://wazzocr.fusioneta.com.my (no trailing slash)
@@ -354,7 +363,7 @@ function pingHeartbeat_() {
   try {
     UrlFetchApp.fetch(CONFIG.INBOX_URL, {
       method: 'post', muteHttpExceptions: true,
-      payload: { key: CONFIG.INBOX_KEY, heartbeat: '1' },
+      payload: { key: CONFIG.INBOX_KEY, heartbeat: '1', version: SCRIPT_VERSION },
     });
   } catch (e) { /* best-effort */ }
 }

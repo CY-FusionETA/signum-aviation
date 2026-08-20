@@ -601,6 +601,23 @@ check('  → reason names the file too', $IL::plainMessage(\App\Db::one("SELECT 
 $idR = $IL::recordDelivery(['event_at'=>'2026-08-13T01:09:00Z','attachment'=>'real.pdf','delivery'=>'sent']);
 check('a real send still gets the next reply', $IL::recordReply('wz-s1', $succ, 'Bot', '2026-08-13T01:10:00Z')['row_id'], $idR);
 
+// Code.gs is pasted into Apps Script by hand, so the app cannot assume the script
+// it is talking to matches the repo. The heartbeat carries the version to say so.
+$IL::heartbeat($IL::EXPECTED_SCRIPT_VERSION);
+$sv = $IL::scriptStatus();
+check('current script reports as current', $sv['current'], true);
+check('  → and as known', $sv['known'], true);
+$IL::heartbeat('2026-01-01');
+check('an older paste is not current', $IL::scriptStatus()['current'], false);
+check('  → but its version is named', $IL::scriptStatus()['version'], '2026-01-01');
+// A Code.gs predating the version field sends nothing — that must not leave the
+// last good version standing and read as up to date.
+$IL::heartbeat('');
+$sv0 = $IL::scriptStatus();
+check('a version-less script reads as unknown', $sv0['known'], false);
+check('  → and not current', $sv0['current'], false);
+check('  → heartbeat still recorded', $IL::lastRun() !== '', true);
+
 // --- 17. Inbox: two-message replies + the match window ----------------
 // The processor sends the analysis first, then the create confirmation. The
 // analysis must NOT close the row, or the confirmation lands on the next
