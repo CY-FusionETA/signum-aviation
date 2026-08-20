@@ -29,7 +29,11 @@ final class ActivityFeed
         $limit  = max(1, min(100, $limit));
         $events = [];
 
-        foreach (Db::all("SELECT * FROM inbox_events ORDER BY " . self::AT . " DESC LIMIT ?", [$limit]) as $r) {
+        // source='gmail' matches InboxLog::rows() — a processor-only reply row is a
+        // fragment of someone else's delivery, not an event in its own right, and
+        // showing it here but not in the Inbox is exactly the kind of drift this
+        // feed must not have.
+        foreach (Db::all("SELECT * FROM inbox_events WHERE source = 'gmail' ORDER BY " . self::AT . " DESC LIMIT ?", [$limit]) as $r) {
             $events[] = self::invoiceEvent($r);
         }
         foreach (Db::all("SELECT * FROM leon_trips ORDER BY updated_at DESC, id DESC LIMIT ?", [$limit]) as $t) {
@@ -54,10 +58,21 @@ final class ActivityFeed
             'active'  => $active,
             'state'   => $active ? 'working' : 'watching',
             'last_at' => $last !== '' ? self::iso($last) : '',
+            // Counted the same way the Inbox counts — see InboxLog::stats(). An
+            // email we deliberately sent nothing for is not "delivered", and a
+            // failed delivery needs review even though no processor ever answered.
             'today'   => [
-                'sent'   => (int)Db::scalar("SELECT COUNT(*) FROM inbox_events WHERE " . self::AT . " >= ?", [$since]),
-                'bills'  => (int)Db::scalar("SELECT COUNT(*) FROM inbox_events WHERE ocr_status IN ('created','success') AND " . self::AT . " >= ?", [$since]),
-                'errors' => (int)Db::scalar("SELECT COUNT(*) FROM inbox_events WHERE ocr_status IN ('failed','error') AND COALESCE(dup_ok,0)=0 AND " . self::AT . " >= ?", [$since]),
+                'sent'   => (int)Db::scalar("SELECT COUNT(*) FROM inbox_events
+                                              WHERE source='gmail' AND COALESCE(delivery,'') <> 'skipped'
+                                                AND " . self::AT . " >= ?", [$since]),
+                'bills'  => (int)Db::scalar("SELECT COUNT(*) FROM inbox_events
+                                              WHERE source='gmail' AND ocr_status IN ('created','success')
+                                                AND " . self::AT . " >= ?", [$since]),
+                'errors' => (int)Db::scalar("SELECT COUNT(*) FROM inbox_events
+                                              WHERE source='gmail'
+                                                AND ((ocr_status IN ('failed','error') AND COALESCE(dup_ok,0) <> 1)
+                                                     OR delivery='failed')
+                                                AND " . self::AT . " >= ?", [$since]),
                 'trips'  => (int)Db::scalar("SELECT COUNT(*) FROM leon_trips WHERE updated_at >= ?", [$since]),
             ],
         ];
@@ -77,6 +92,30 @@ final class ActivityFeed
         $read  = $who !== '' ? "Read {$file} from {$who}" : "Read {$file}";
         $think = 'Extracted the supplier, amount and invoice number';
 
+        // Nothing was ever sent, so none of the reading/extracting steps below
+        // happened. Say what the Inbox says instead of narrating work that did
+        // not occur.
+        if ($status === 'skipped') {
+            $msg = InboxLog::plainMessage($r);
+            return self::event($r, 'skip', $who !== '' ? "Email from {$who}" : 'Email with no attachment', [
+                ['read',   $who !== '' ? "Read an email from {$who}" : 'Read an email'],
+                ['think',  'It carries no attachment — there is nothing to extract'],
+                ['decide', 'Nothing to send to the processor'],
+                ['do',     $msg !== '' ? $msg : 'Nothing sent — this email has no attachment.'],
+            ]);
+        }
+
+        // The attachment never reached the processor, so it was never read.
+        if ($status === 'undelivered') {
+            $msg = InboxLog::plainMessage($r);
+            return self::event($r, 'err', $num !== '' ? "Supplier invoice {$num}" : 'Supplier invoice', [
+                ['read',   $who !== '' ? "Took {$file} from {$who}" : "Took {$file}"],
+                ['think',  'Prepared it for the processor'],
+                ['decide', 'Could not deliver it to the processor'],
+                ['do',     $msg !== '' ? "Not sent: {$msg}" : 'Not sent — flagged for review'],
+            ]);
+        }
+
         if ($status === 'cleared') {
             $decide = ($num !== '' ? "Invoice {$num} " : 'That invoice ') . 'was already in Xero — clear the stale copy';
             $do     = 'Deleted the old bill and re-created it fresh';
@@ -86,6 +125,11 @@ final class ActivityFeed
         } elseif ($status === 'pending') {
             $decide = 'Handed the invoice to the processor';
             $do     = 'Waiting for the result…';
+        } elseif ($status === 'silent') {
+            // Past its reply window: the result is never coming, and the Inbox
+            // has already stopped calling this one pending.
+            $decide = 'Handed the invoice to the processor';
+            $do     = 'No reply came back — flagged for review';
         } else { // err
             $decide = 'Could not post the bill to Xero';
             $msg    = InboxLog::plainMessage($r);
@@ -93,18 +137,25 @@ final class ActivityFeed
         }
 
         $sev = $status === 'ok' || $status === 'cleared' ? 'ok' : ($status === 'pending' ? 'pending' : 'err');
+        return self::event($r, $sev, $num !== '' ? "Supplier invoice {$num}" : 'Supplier invoice', [
+            ['read', $read], ['think', $think], ['decide', $decide], ['do', $do],
+        ]);
+    }
+
+    /**
+     * Shape one inbox row into a feed event.
+     * @param list<array{0:string,1:string}> $steps [phase, text] pairs
+     */
+    private static function event(array $r, string $status, string $title, array $steps): array
+    {
         return [
             'at'     => self::iso((string)($r['event_at'] ?: ($r['ts'] ?? ''))),
             'kind'   => 'invoice',
-            'status' => $sev,
-            'title'  => $num !== '' ? "Supplier invoice {$num}" : 'Supplier invoice',
-            'steps'  => [
-                ['phase' => 'read',   'text' => $read],
-                ['phase' => 'think',  'text' => $think],
-                ['phase' => 'decide', 'text' => $decide],
-                ['phase' => 'do',     'text' => $do],
-            ],
-            'link'   => (string)($r['bill_url'] ?? ''),
+            'status' => $status,
+            'title'  => $title,
+            'steps'  => array_map(fn($s) => ['phase' => $s[0], 'text' => $s[1]], $steps),
+            // Only a row that actually produced a bill has somewhere to link to.
+            'link'   => $status === 'skip' ? '' : (string)($r['bill_url'] ?? ''),
         ];
     }
 
@@ -133,13 +184,27 @@ final class ActivityFeed
         ];
     }
 
-    /** The row's outcome, collapsed to one of: ok | cleared | pending | err. */
+    /**
+     * The row's outcome: skipped | undelivered | ok | cleared | pending | silent | err.
+     *
+     * Delivery is checked BEFORE the processor's answer. A row that was never
+     * sent has no answer and never will — reading ocr_status first is what made
+     * a no-attachment email report as "waiting for the result".
+     * Mirrors the Inbox: see InboxLog::stats() and the pills in render_inbox().
+     */
     private static function inboxStatus(array $r): string
     {
+        $delivery = strtolower(trim((string)($r['delivery'] ?? '')));
+        if ($delivery === 'skipped') return 'skipped';
+        if ($delivery === 'failed')  return 'undelivered';
+
         $s = strtolower(trim((string)($r['ocr_status'] ?? '')));
         if (($s === 'failed' || $s === 'error') && (int)($r['dup_ok'] ?? 0) === 1) return 'cleared';
         if ($s === 'created' || $s === 'success') return 'ok';
-        if ($s === 'pending' || $s === '') return 'pending';
+        if ($s === 'pending' || $s === '') {
+            return InboxLog::isStale((string)($r['event_at'] ?: ($r['ts'] ?? '')), (string)($r['ocr_message'] ?? ''))
+                ? 'silent' : 'pending';
+        }
         return 'err';
     }
 

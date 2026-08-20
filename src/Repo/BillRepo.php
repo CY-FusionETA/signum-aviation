@@ -58,6 +58,15 @@ final class BillRepo
             'base_currency'       => (string)($bill['base_currency'] ?? ''),
             'base_total'          => $bill['base_total'] ?? null,
             'description'         => (string)($bill['description'] ?? ''),
+            // Xero's own version stamp, plus the version we last read line items
+            // at — the reconcile cron uses these to avoid re-reading a bill that
+            // has not moved. Both fall back to what is stored, so a client that
+            // doesn't supply them (the stub) never blanks them.
+            // ?: not ?? — a client that supplies an empty value (or none at all,
+            // like the stub) must leave the stored stamp alone rather than blank
+            // it, which would make every bill look changed on the next run.
+            'xero_updated_at'     => (string)($bill['updated_at'] ?? '')    ?: (string)($existing['xero_updated_at'] ?? ''),
+            'lines_checked_utc'   => (string)($bill['lines_checked'] ?? '') ?: (string)($existing['lines_checked_utc'] ?? ''),
             'ex_airport'          => (string)($match['ex_airport'] ?? ''),
             'ex_date'             => (string)($match['ex_date'] ?? ''),
             'ex_tail'             => (string)($match['ex_tail'] ?? ''),
@@ -78,6 +87,33 @@ final class BillRepo
         }
         Db::insert('xero_bills', $fields);
         return self::find($tenantId, (string)$bill['invoice_id']);
+    }
+
+    /**
+     * What we already know about this tenant's bills, keyed by Xero InvoiceID —
+     * fed to listActiveBills() so it can skip re-reading unchanged bills.
+     * @return array<string,array{updated:string,description:string,lines_checked:string}>
+     */
+    public static function knownForTenant(string $tenantId): array
+    {
+        $out = [];
+        foreach (Db::all(
+            "SELECT xero_invoice_id, xero_updated_at, description, lines_checked_utc
+               FROM xero_bills WHERE tenant_id = ?", [$tenantId]) as $r) {
+            $out[(string)$r['xero_invoice_id']] = [
+                'updated'       => (string)($r['xero_updated_at'] ?? ''),
+                'description'   => (string)($r['description'] ?? ''),
+                'lines_checked' => (string)($r['lines_checked_utc'] ?? ''),
+            ];
+        }
+        return $out;
+    }
+
+    /** Stamp when (and at which Xero version) this bill's History was last read. */
+    public static function setHistoryChecked(int $id, string $xeroUpdatedAt): void
+    {
+        Db::q("UPDATE xero_bills SET history_checked_utc = ?, history_checked_at = ? WHERE id = ?",
+            [$xeroUpdatedAt, gmdate('Y-m-d H:i:s'), $id]);
     }
 
     /** Manually link a bill to a trip (staff override for review/ambiguous). */

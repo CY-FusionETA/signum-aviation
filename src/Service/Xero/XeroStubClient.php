@@ -10,7 +10,7 @@ namespace App\Service\Xero;
  */
 class XeroStubClient implements XeroClientInterface
 {
-    public function listActiveBills(): array
+    public function listActiveBills(array $known = []): array
     {
         return ['ok' => false, 'bills' => [], 'error' => 'Xero is not connected — connect an org to reconcile bills.'];
     }
@@ -33,6 +33,11 @@ class XeroStubClient implements XeroClientInterface
     public function invoiceStatus(string $invoiceId): string
     {
         return '';
+    }
+
+    public function invoiceStatuses(array $invoiceIds): array
+    {
+        return array_fill_keys(array_map('strval', $invoiceIds), '');
     }
 
     public function findBillByNumber(string $invoiceNumber): array

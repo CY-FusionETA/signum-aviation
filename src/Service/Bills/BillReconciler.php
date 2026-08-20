@@ -10,6 +10,7 @@ use App\Service\Invoices\InvoiceService;
 use App\Service\Invoices\CompletenessChecker;
 use App\Service\Xero\XeroClientFactory;
 use App\Service\Xero\XeroOAuth;
+use App\Settings;
 
 /**
  * Module 3 orchestration:
@@ -35,7 +36,9 @@ final class BillReconciler
         $tenantId = (string)(XeroOAuth::token()['tenant_id'] ?? '');
         $client   = XeroClientFactory::make();
 
-        $res = $client->listActiveBills();
+        // Hand the client what we already hold so it can skip re-reading bills
+        // Xero says have not changed — see listActiveBills().
+        $res = $client->listActiveBills(BillRepo::knownForTenant($tenantId));
         if (empty($res['ok'])) return ['ok' => false, 'error' => (string)($res['error'] ?? 'Could not read bills from Xero.')];
 
         // Retire local bills no longer active in Xero (voided/deleted) so they stop
@@ -55,9 +58,10 @@ final class BillReconciler
             $match = BillMatcher::match($bill, $trips);
             $row = BillRepo::upsert($tenantId, $bill, $match);
 
-            if ($historyLookups < self::HISTORY_LOOKUPS_PER_REFRESH) {
+            if ($historyLookups < self::HISTORY_LOOKUPS_PER_REFRESH && self::historyDue($row, $bill)) {
                 $historyLookups++;
                 $hist = $client->billHistory((string)$bill['invoice_id']);
+                BillRepo::setHistoryChecked((int)$row['id'], (string)($bill['updated_at'] ?? ''));
                 if (($row['xero_created_at'] ?? '') === '' && $hist['created'] !== '') {
                     BillRepo::setXeroCreatedAt((int)$row['id'], $hist['created']);
                     $row['xero_created_at'] = $hist['created'];
@@ -161,12 +165,48 @@ final class BillReconciler
             : ['invoiced' => false, 'reason' => (string)($r['error'] ?? 'invoice failed')];
     }
 
+    /**
+     * Is this bill's Xero History worth a call this run?
+     *
+     * History is the only source of the bill's created-in-Xero time and of manual
+     * notes, and it used to be read for every bill on every 15-minute reconcile —
+     * 576 calls a day against a 1000-a-day allowance. It is now read when the
+     * created time is still missing, when Xero's UpdatedDateUTC has moved since
+     * the last read, or when the last read is older than the refresh interval.
+     *
+     * The interval exists because adding a note in Xero does not necessarily bump
+     * UpdatedDateUTC, so a purely version-based gate could miss notes forever.
+     * Default 60 minutes; override with the xero.history_refresh_minutes setting.
+     */
+    private static function historyDue(array $row, array $bill): bool
+    {
+        if ((string)($row['xero_created_at'] ?? '') === '') return true;
+
+        $updated = (string)($bill['updated_at'] ?? '');
+        if ($updated !== '' && $updated !== (string)($row['history_checked_utc'] ?? '')) return true;
+
+        $lastAt = strtotime((string)($row['history_checked_at'] ?? '') . ' UTC') ?: 0;
+        if ($lastAt === 0) return true;
+
+        $mins = (int)Settings::get('xero.history_refresh_minutes', '60');
+        if ($mins <= 0) $mins = 60;
+        return $lastAt <= time() - $mins * 60;
+    }
+
     /** Remove client invoices that Xero now reports as VOIDED/DELETED. @return int removed. */
     private static function retireVoidedInvoices(string $tenantId, $client): int
     {
+        $invoices = InvoiceRepo::allForTenant($tenantId);
+        if (!$invoices) return 0;
+
+        // One call for the whole set instead of one per invoice.
+        $statuses = $client->invoiceStatuses(
+            array_map(fn($i) => (string)$i['xero_invoice_id'], $invoices)
+        );
+
         $gone = 0;
-        foreach (InvoiceRepo::allForTenant($tenantId) as $inv) {
-            $st = $client->invoiceStatus((string)$inv['xero_invoice_id']);
+        foreach ($invoices as $inv) {
+            $st = (string)($statuses[(string)$inv['xero_invoice_id']] ?? '');
             if (in_array($st, ['VOIDED', 'DELETED'], true)) {
                 InvoiceRepo::deleteByTrip($tenantId, (int)$inv['trip_id']);
                 $gone++;

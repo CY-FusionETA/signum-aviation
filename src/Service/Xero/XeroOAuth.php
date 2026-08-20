@@ -260,11 +260,12 @@ final class XeroOAuth
             },
         ]);
         if ($body !== null) curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
+        $startedAt = microtime(true);
         $resp = curl_exec($ch);
         $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $err  = curl_error($ch);
         curl_close($ch);
-        self::logCall($method, $url, $code);
+        self::logCall($method, $url, $code, (int)round((microtime(true) - $startedAt) * 1000));
         self::noteRateLimit($code);
         if ($resp === false) throw new \RuntimeException('Network error calling Xero: ' . $err);
         return [$code, (string)$resp];
@@ -315,9 +316,15 @@ final class XeroOAuth
      *
      *   spend by endpoint:  awk '{print $2, $3}' storage/logs/xero-calls.log | sort | uniq -c | sort -rn
      *   quota over time:    grep day-left storage/logs/xero-calls.log | tail -40
+     *
+     * The same call is also mirrored into the xero_api_calls table, which is
+     * what the superadmin "API log" view reads; this file stays the raw trail.
      */
-    private static function logCall(string $method, string $url, int $code): void
+    private static function logCall(string $method, string $url, int $code, int $durationMs = 0): void
     {
+        // The same facts, queryable: the API log view counts calls against the
+        // daily allowance, which this flat file cannot do. See XeroCallLog.
+        XeroCallLog::record($method, $url, $code, self::$lastHeaders, $durationMs);
         try {
             $path = (string)parse_url($url, PHP_URL_PATH);
             $bits = '';

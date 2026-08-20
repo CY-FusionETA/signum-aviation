@@ -3,6 +3,8 @@ declare(strict_types=1);
 
 namespace App\Service\Xero;
 
+use App\Settings;
+
 /**
  * Live Xero client for the connected organisation: read DRAFT supplier bills
  * (ACCPAY), tag them with a trip number, and raise DRAFT client sales invoices
@@ -101,9 +103,19 @@ final class XeroApiClient implements XeroClientInterface
      * List ACTIVE supplier bills (ACCPAY) from the connected org — draft ones
      * just created plus ones already approved (authorised). Excludes
      * VOIDED/DELETED, so bills that vanish from this list have been retired in
-     * Xero. Each bill carries its Xero 'status'. @return array{ok:bool, bills:array, error?:string}
+     * Xero. Each bill carries its Xero 'status'.
+     *
+     * $known is what the caller has already stored, keyed by Xero InvoiceID:
+     * ['updated' => UpdatedDateUTC, 'description' => stored, 'lines_checked' => the
+     * UpdatedDateUTC we last read line items at]. The list endpoint omits line
+     * items, so reading them costs one extra call per bill — 6 bills × 96 cron
+     * runs was 576 calls a day, most of the org's daily allowance, re-fetching
+     * text that had not changed (and for these bills is empty). With $known
+     * supplied that call is made only when Xero says the bill actually moved.
+     *
+     * @return array{ok:bool, bills:array, error?:string}
      */
-    public function listActiveBills(): array
+    public function listActiveBills(array $known = []): array
     {
         try {
             $auth = XeroOAuth::accessToken();
@@ -124,11 +136,27 @@ final class XeroApiClient implements XeroClientInterface
 
             $bills = [];
             foreach ($json['Invoices'] ?? [] as $inv) {
-                $descs = array_map(fn($l) => (string)($l['Description'] ?? ''), $inv['LineItems'] ?? []);
+                $id      = (string)($inv['InvoiceID'] ?? '');
+                $updated = self::xeroDateTime((string)($inv['UpdatedDateUTC'] ?? ''));
+                $descs   = array_map(fn($l) => (string)($l['Description'] ?? ''), $inv['LineItems'] ?? []);
+
                 // The Invoices *list* endpoint omits line items — fetch the bill by
                 // ID to get the "…at VHHH…for MAL191" lines the matcher/legs need.
-                if (!array_filter($descs) && ($id = (string)($inv['InvoiceID'] ?? '')) !== '') {
-                    $descs = self::billLineDescriptions($auth, $id);
+                // Only worth a call when we have never read this bill's lines, or
+                // Xero says it has changed since we last did.
+                $prev        = $known[$id] ?? null;
+                $linesFresh  = $prev !== null && $updated !== '' && (string)($prev['lines_checked'] ?? '') === $updated;
+                $linesAt     = $prev['lines_checked'] ?? '';
+                if (!array_filter($descs) && $id !== '') {
+                    if ($linesFresh) {
+                        // Reuse what is stored — including a legitimately empty
+                        // result, which is why this is version-stamped rather than
+                        // keyed on "is the description blank".
+                        $descs = [(string)($prev['description'] ?? '')];
+                    } else {
+                        $descs   = self::billLineDescriptions($auth, $id);
+                        $linesAt = $updated;
+                    }
                 }
                 $currency = (string)($inv['CurrencyCode'] ?? '');
                 $total    = isset($inv['Total']) ? (float)$inv['Total'] : null;
@@ -147,6 +175,8 @@ final class XeroApiClient implements XeroClientInterface
                     'base_currency'  => $baseCurrency !== '' ? $baseCurrency : $currency,
                     'base_total'     => self::baseAmount($total, $rate),
                     'description'    => trim(implode(' | ', array_filter($descs))),
+                    'updated_at'     => $updated,
+                    'lines_checked'  => $linesAt,
                 ];
             }
             return ['ok' => true, 'bills' => $bills, 'tenant_id' => $auth['tenant_id']];
@@ -180,6 +210,26 @@ final class XeroApiClient implements XeroClientInterface
      * each bill's own currency so nothing breaks.
      */
     private static function orgBaseCurrency(array $auth): string
+    {
+        // An org's base currency does not change, but this ran on every reconcile
+        // — 96 calls a day for a constant. Cached per tenant, refreshed daily so a
+        // genuine change (or a tenant switch) still lands within a day.
+        $key  = 'xero.base_currency.' . $auth['tenant_id'];
+        $at   = (int)Settings::get($key . '.at', '0');
+        $seen = (string)Settings::get($key, '');
+        if ($seen !== '' && $at > time() - 86400) return $seen;
+
+        $fresh = self::fetchOrgBaseCurrency($auth);
+        if ($fresh !== '') {
+            Settings::set($key, $fresh);
+            Settings::set($key . '.at', (string)time());
+            return $fresh;
+        }
+        return $seen;   // a failed refresh keeps the last known value
+    }
+
+    /** Uncached read of the org's base currency. One Xero call. */
+    private static function fetchOrgBaseCurrency(array $auth): string
     {
         [$code, $body] = XeroOAuth::http('GET', self::API . 'Organisation', [
             'Authorization: Bearer ' . $auth['access_token'],
@@ -349,6 +399,43 @@ final class XeroApiClient implements XeroClientInterface
         } catch (\Throwable $e) {
             return ['ok' => false, 'stubbed' => false, 'error' => $e->getMessage()];
         }
+    }
+
+    /**
+     * Statuses for many invoices in ONE call, keyed by InvoiceID. Xero's Invoices
+     * endpoint takes a comma-separated IDs filter, so checking N client invoices
+     * costs 1 call instead of N. An id missing from the reply maps to '' — the
+     * same "can't read it, leave it alone" outcome as a failed single lookup.
+     *
+     * @param string[] $invoiceIds
+     * @return array<string,string>
+     */
+    public function invoiceStatuses(array $invoiceIds): array
+    {
+        $ids = array_values(array_unique(array_filter(array_map('strval', $invoiceIds))));
+        if (!$ids) return [];
+        $out = array_fill_keys($ids, '');
+        try {
+            $auth = XeroOAuth::accessToken();
+            if (!$auth) return $out;
+
+            // Chunked so a long list can't build an unusable URL.
+            foreach (array_chunk($ids, 50) as $chunk) {
+                [$code, $body] = XeroOAuth::http('GET', self::API . 'Invoices?IDs=' . rawurlencode(implode(',', $chunk)), [
+                    'Authorization: Bearer ' . $auth['access_token'],
+                    'Xero-tenant-id: ' . $auth['tenant_id'],
+                    'Accept: application/json',
+                ]);
+                if ($code < 200 || $code >= 300) continue;
+                foreach (json_decode($body, true)['Invoices'] ?? [] as $inv) {
+                    $id = (string)($inv['InvoiceID'] ?? '');
+                    if ($id !== '' && array_key_exists($id, $out)) $out[$id] = strtoupper((string)($inv['Status'] ?? ''));
+                }
+            }
+        } catch (\Throwable $e) {
+            // Fall through with whatever was resolved; '' never retires anything.
+        }
+        return $out;
     }
 
     /**

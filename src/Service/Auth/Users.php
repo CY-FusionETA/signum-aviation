@@ -31,6 +31,16 @@ final class Users
         return $role === self::SUPERADMIN;
     }
 
+    /**
+     * Roles that may open the Xero API log. Same bar as the access log: it is
+     * an operational/diagnostic view of the org's whole Xero quota, not
+     * something the day-to-day billing user needs.
+     */
+    public static function canViewApiLog(?string $role): bool
+    {
+        return $role === self::SUPERADMIN;
+    }
+
     public static function normalizeEmail(string $email): string
     {
         return strtolower(trim($email));

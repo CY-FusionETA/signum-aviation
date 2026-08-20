@@ -5,6 +5,7 @@ require __DIR__ . '/../src/bootstrap.php';
 
 use App\Db;
 use App\Service\Auth\Users;
+use App\Service\Xero\XeroCallLog;
 
 $sql = file_get_contents(__DIR__ . '/schema.sql');
 if ($sql === false) { fwrite(STDERR, "Cannot read schema.sql\n"); exit(1); }
@@ -23,6 +24,13 @@ $add = [
         'remarks'         => 'TEXT',
         'approval_hold'   => 'INTEGER NOT NULL DEFAULT 0',
         'match_reason'    => 'TEXT',
+        // Quota control: Xero's own UpdatedDateUTC for the bill, plus the version
+        // at which we last spent a call reading its line items / History. Lets the
+        // reconcile cron skip re-reading a bill that has not changed.
+        'xero_updated_at'     => 'TEXT',
+        'lines_checked_utc'   => 'TEXT',
+        'history_checked_at'  => 'TEXT',
+        'history_checked_utc' => 'TEXT',
     ],
     'leon_trips' => [
         'waived_legs' => 'TEXT',
@@ -48,6 +56,12 @@ foreach ($add as $table => $cols) {
         }
     }
 }
+
+// Seed the Xero call log from the flat file, once. storage/logs/xero-calls.log
+// predates the table by weeks and holds the day-limit burn the API log view
+// exists to explain, so that history is worth carrying over.
+$imported = XeroCallLog::importLogFile();
+if ($imported > 0) echo "  + xero_api_calls: imported {$imported} call(s) from storage/logs/xero-calls.log\n";
 
 // Carry the old single admin (app_settings) into the users table, once.
 $seeded = Users::seedFromLegacy();

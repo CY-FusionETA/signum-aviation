@@ -167,3 +167,30 @@ CREATE TABLE IF NOT EXISTS inbox_events (
   wazzup_message_id TEXT                            -- inbound message id (dedupe)
 );
 CREATE INDEX IF NOT EXISTS idx_inbox_pending ON inbox_events (ocr_status, id);
+
+-- Xero API call log. One row per outbound call, with the rate-limit budget Xero
+-- returns on every response — the only place those counters exist. Xero allows
+-- 5000 calls per org per day (resetting midnight UTC), 60/min per org and
+-- 10000/min across the whole app; when the day limit runs out every call 429s
+-- with an EMPTY body, so this table is the only way to see what spent it.
+-- Mirrors storage/logs/xero-calls.log, which stays as the append-only trail.
+CREATE TABLE IF NOT EXISTS xero_api_calls (
+  id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts                      TEXT DEFAULT CURRENT_TIMESTAMP,  -- when the call was made (UTC)
+  method                  TEXT,
+  endpoint                TEXT,                            -- grouped label, e.g. 'Invoices', 'PurchaseOrders/{id}/Attachments'
+  path                    TEXT,                            -- raw URL path, no query string
+  http_code               INTEGER,
+  ok                      INTEGER NOT NULL DEFAULT 0,
+  duration_ms             INTEGER,
+  day_limit_remaining     INTEGER,                         -- X-DayLimit-Remaining     (of 5000)
+  min_limit_remaining     INTEGER,                         -- X-MinLimit-Remaining     (of 60)
+  app_min_limit_remaining INTEGER,                         -- X-AppMinLimit-Remaining  (of 10000)
+  retry_after             INTEGER,                         -- seconds, only on a 429
+  limit_problem           TEXT,                            -- x-rate-limit-problem: which limit a 429 tripped
+  request_id              TEXT,                            -- x-request-id, for Xero support
+  headers_json            TEXT                             -- every x-* response header, verbatim
+);
+CREATE INDEX IF NOT EXISTS idx_xac_ts ON xero_api_calls (ts);
+CREATE INDEX IF NOT EXISTS idx_xac_endpoint ON xero_api_calls (endpoint);
+CREATE INDEX IF NOT EXISTS idx_xac_code ON xero_api_calls (http_code);

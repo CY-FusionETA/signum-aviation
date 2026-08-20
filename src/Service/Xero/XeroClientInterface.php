@@ -8,9 +8,13 @@ interface XeroClientInterface
 {
     /**
      * List ACTIVE supplier bills (ACCPAY: draft/submitted/authorised) — Module 3 input.
+     * $known is the caller's stored state per Xero InvoiceID
+     * (['updated'=>…, 'description'=>…, 'lines_checked'=>…]); supplying it lets the
+     * client skip the extra per-bill line-item read for bills Xero says are
+     * unchanged, which is the difference between ~16 and ~2 calls per reconcile.
      * @return array{ok:bool, bills:array, tenant_id?:string, error?:string}
      */
-    public function listActiveBills(): array;
+    public function listActiveBills(array $known = []): array;
 
     /**
      * Tag a draft bill with the matched trip number by writing it into the
@@ -27,6 +31,14 @@ interface XeroClientInterface
 
     /** Current Xero status of an invoice (e.g. AUTHORISED, VOIDED); '' if gone. */
     public function invoiceStatus(string $invoiceId): string;
+
+    /**
+     * Statuses for many invoices in one call, keyed by InvoiceID; '' for any that
+     * can't be read. Use this instead of a loop over invoiceStatus().
+     * @param string[] $invoiceIds
+     * @return array<string,string>
+     */
+    public function invoiceStatuses(array $invoiceIds): array;
 
     /**
      * Find a live supplier bill (ACCPAY) by its invoice number — used to clear the

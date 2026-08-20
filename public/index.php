@@ -19,6 +19,7 @@ use App\Service\Bills\BillReconciler;
 use App\Service\Invoices\InvoiceService;
 use App\Service\Invoices\CompletenessChecker;
 use App\Service\Xero\XeroOAuth;
+use App\Service\Xero\XeroCallLog;
 use App\Service\Inbox\InboxLog;
 use App\Service\Inbox\DropStore;
 use App\Service\Inbox\DuplicateBill;
@@ -85,6 +86,7 @@ function local_dt(?string $utc, string $fmt = 'd M Y H:i'): string
 function current_email(): string { return (string)($_SESSION['email'] ?? ''); }
 function current_role(): string  { return (string)($_SESSION['role'] ?? Users::USER); }
 function can_view_access_log(): bool { return is_authed() && Users::canViewAccessLog(current_role()); }
+function can_view_api_log(): bool { return is_authed() && Users::canViewApiLog(current_role()); }
 
 /** Start the session for a verified user row. */
 function sign_in(array $user): void {
@@ -484,11 +486,21 @@ if ($path === '/invoices/create' && $method === 'POST') {
     redirect('/?view=invoices');
 }
 
-$view = in_array($_GET['view'] ?? '', ['dashboard', 'trips', 'bills', 'invoices', 'inbox', 'settings', 'access'], true) ? $_GET['view'] : 'dashboard';
+// --- Xero API log: wipe the counters (superadmin only) --------------
+if ($path === '/api-log/clear' && $method === 'POST') {
+    if (!can_view_api_log()) { http_response_code(404); exit('Not found'); }
+    csrf_check();
+    $n = XeroCallLog::clear();
+    $_SESSION['flash_ok'] = "Cleared {$n} logged Xero call(s). storage/logs/xero-calls.log is untouched.";
+    redirect('/?view=apilog');
+}
+
+$view = in_array($_GET['view'] ?? '', ['dashboard', 'trips', 'bills', 'invoices', 'inbox', 'settings', 'access', 'apilog'], true) ? $_GET['view'] : 'dashboard';
 // The access log is superadmin-only. Anyone else asking for it by URL gets the
 // dashboard — the link is hidden for them, so a hand-typed ?view=access is the
 // only way to land here.
 if ($view === 'access' && !can_view_access_log()) $view = 'dashboard';
+if ($view === 'apilog' && !can_view_api_log())    $view = 'dashboard';
 render_home($view);
 
 // ====================================================================
@@ -510,6 +522,7 @@ function icon(string $n): string {
         'settings'  => '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 7 19.4a1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0-1.1-2.7H1a2 2 0 1 1 0-4h.1A1.6 1.6 0 0 0 2.6 7a1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H7a1.6 1.6 0 0 0 1-1.5V1a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 2.7 1.1 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V7a1.6 1.6 0 0 0 1.5 1H23a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/>',
         'lock'      => '<rect x="4" y="10.5" width="16" height="10.5" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/>',
         'inbox'     => '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
+        'gauge'     => '<path d="M12 21a9 9 0 1 1 9-9"/><path d="m12 12 4.5-3.5"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/><path d="M21 15.5 19.5 21"/>',
     ][$n] ?? '';
     return '<svg class="nicon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' . $p . '</svg>';
 }
@@ -604,7 +617,7 @@ function render_home(string $view): void {
             'created' => (string)($t['created_at'] ?? ''), 'updated' => (string)($t['updated_at'] ?? ''),
         ];
     }
-    $titles = ['dashboard' => 'Dashboard', 'trips' => 'Trips', 'bills' => 'Bills', 'invoices' => 'Invoices', 'inbox' => 'Inbox', 'settings' => 'Settings', 'access' => 'Access log'];
+    $titles = ['dashboard' => 'Dashboard', 'trips' => 'Trips', 'bills' => 'Bills', 'invoices' => 'Invoices', 'inbox' => 'Inbox', 'settings' => 'Settings', 'access' => 'Access log', 'apilog' => 'Xero API log'];
     $email = (string)($_SESSION['email'] ?? admin_email());
     $initial = strtoupper(substr($email, 0, 1) ?: 'S');
     ?><!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -620,6 +633,9 @@ function render_home(string $view): void {
         <a href="<?= e(base()) ?>/?view=invoices" class="<?= $view==='invoices'?'active':'' ?>"><?= icon('invoice') ?><span class="lbl">Invoices</span></a>
         <a href="<?= e(base()) ?>/?view=inbox" class="<?= $view==='inbox'?'active':'' ?>"><?= icon('inbox') ?><span class="lbl">Inbox</span></a>
         <a href="<?= e(base()) ?>/?view=settings" class="<?= $view==='settings'?'active':'' ?>"><?= icon('settings') ?><span class="lbl">Settings</span></a>
+        <?php if (can_view_api_log()): ?>
+        <a href="<?= e(base()) ?>/?view=apilog" class="<?= $view==='apilog'?'active':'' ?>"><?= icon('gauge') ?><span class="lbl">API log</span></a>
+        <?php endif; ?>
         <?php if (can_view_access_log()): ?>
         <a href="<?= e(base()) ?>/?view=access" class="<?= $view==='access'?'active':'' ?>"><?= icon('lock') ?><span class="lbl">Access log</span></a>
         <?php endif; ?>
@@ -647,6 +663,7 @@ function render_home(string $view): void {
           elseif ($view === 'inbox')     render_inbox();
           elseif ($view === 'settings')  render_settings($connected, $tenant);
           elseif ($view === 'access')    render_access_log();
+          elseif ($view === 'apilog')    render_api_log();
           else                           render_dashboard($stat, $js, $connected, $tenant);
         ?>
       </main>
@@ -670,6 +687,172 @@ function render_home(string $view): void {
     <script><?= ai_js() ?></script>
     <script><?= dash_js() ?></script>
     </body></html><?php
+}
+
+/**
+ * Xero API log — every call this app makes to Xero, and what is left of the
+ * quota. Xero publishes no usage dashboard: the remaining allowance appears
+ * only in response headers (X-DayLimit-Remaining, X-MinLimit-Remaining,
+ * X-AppMinLimit-Remaining), and when the daily 5000 runs out every call comes
+ * back 429 with an empty body. This view is where those numbers surface.
+ */
+function render_api_log(): void {
+    $win    = XeroCallLog::window();          // Xero's real quota window, not the calendar day
+    $stat   = XeroCallLog::stats($win['start']);
+    $lim    = XeroCallLog::latestLimits();
+    $byEp   = XeroCallLog::byEndpoint(12, $win['start']);
+    $daily  = XeroCallLog::daily(14);
+    $rows   = XeroCallLog::recent(200);
+    $cool   = XeroOAuth::cooldownLeft();
+    // While Xero is refusing calls its Retry-After is the exact reopening time;
+    // otherwise fall back to 24h after the window opened (a close upper bound —
+    // the refill happens some minutes before the first call that observes it).
+    $resetAt   = $cool > 0 ? gmdate('Y-m-d H:i:s', time() + $cool) : $win['resets_at'];
+    $resetExact = $cool > 0;
+
+    // One budget card: how much of a limit is left, coloured as it runs down.
+    $budget = function (?int $left, int $cap, string $label, string $header): void {
+        $pct  = $left === null ? null : max(0, min(100, (int)round($left / $cap * 100)));
+        $tone = $pct === null ? 'gray' : ($pct <= 10 ? 'red' : ($pct <= 30 ? 'amber' : 'green'));
+        ?>
+        <div class="xbud <?= $tone ?>">
+          <div class="tlbl"><?= e($label) ?></div>
+          <div class="tnum"><?= $left === null ? '—' : number_format($left) ?><span class="muted" style="font-size:14px;font-weight:500"> / <?= number_format($cap) ?></span></div>
+          <div class="xbar"><span style="width:<?= $pct ?? 0 ?>%"></span></div>
+          <div class="muted small mono"><?= e($header) ?></div>
+        </div>
+        <?php
+    };
+    $maxDay = 0;
+    foreach ($daily as $d) $maxDay = max($maxDay, (int)$d['calls']);
+    ?>
+
+    <?php if ($cool > 0): ?>
+      <div class="alert err">Xero is rate-limiting right now<?= $lim && $lim['limit_problem'] ? ' — the <b>' . e((string)$lim['limit_problem']) . '</b> limit' : '' ?>.
+        Calls resume in about <?= $cool >= 3600 ? intdiv($cool, 3600) . 'h ' . intdiv($cool % 3600, 60) . 'm' : max(1, intdiv($cool, 60)) . 'm' ?>.</div>
+    <?php endif; ?>
+
+    <div class="card">
+      <div class="chead" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+        <div>
+          <h2 style="margin:0;font-size:15px">Remaining allowance</h2>
+          <p class="muted small" style="margin:2px 0 0">As reported by Xero on the last call that carried the counters —
+            <?= $lim ? e(local_dt((string)$lim['ts'], 'd M Y H:i:s')) : 'nothing recorded yet' ?><?= $lim ? ' (MYT)' : '' ?>.</p>
+        </div>
+        <form method="post" action="<?= e(base()) ?>/api-log/clear" onsubmit="return confirm('Clear the logged Xero calls? The counters restart from zero. storage/logs/xero-calls.log is not touched.')">
+          <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>">
+          <button class="btn ghost" type="submit">Clear log</button>
+        </form>
+      </div>
+      <div class="xbuds">
+        <?php
+          $budget($lim['day_limit_remaining']     ?? null, $win['cap'],          'Calls left this day · this org', 'X-DayLimit-Remaining');
+          $budget($lim['min_limit_remaining']     ?? null, XeroCallLog::CAP_MIN, 'Calls left this minute · org',   'X-MinLimit-Remaining');
+          $budget($lim['app_min_limit_remaining'] ?? null, XeroCallLog::CAP_APP, 'Left this minute · whole app',   'X-AppMinLimit-Remaining');
+        ?>
+      </div>
+      <p class="muted small" style="margin:12px 0 0">
+        This organisation's daily ceiling is <b><?= number_format($win['cap']) ?></b> calls — read from the header itself, not assumed
+        (Xero documents 5,000, but this connection has never been given more than <?= number_format($win['cap'] - 1) ?> left).
+        The day window is <b>not</b> the calendar day: it last refilled
+        <?= $win['start'] ? '<b>' . e(local_dt((string)$win['start'], 'd M, H:i')) . '</b> MYT' : 'at an unknown time' ?>
+        <?= $resetAt ? ' and reopens ' . ($resetExact ? '' : '≈') . '<b>' . e(local_dt((string)$resetAt, 'd M, H:i')) . '</b> MYT' : '' ?>.
+        Everything below is counted from that refill, which is the window Xero is charging against.
+        The two per-minute limits refill every 60 seconds, so they read full whenever the app is not bursting —
+        that is why they can sit at <?= XeroCallLog::CAP_MIN ?> and <?= number_format(XeroCallLog::CAP_APP - 1) ?> while the daily budget is exhausted.</p>
+    </div>
+
+    <section class="tiles" style="grid-template-columns:repeat(5,1fr)">
+      <div class="tile"><div class="tnum"><?= number_format($stat['window']) ?></div><div class="tlbl">Calls this window</div></div>
+      <div class="tile"><div class="tnum"><?= number_format($stat['hour']) ?></div><div class="tlbl">Last hour</div></div>
+      <div class="tile"><div class="tnum"<?= $stat['failed'] ? ' style="color:#b42318"' : '' ?>><?= number_format($stat['failed']) ?></div><div class="tlbl">Failed this window</div></div>
+      <div class="tile"><div class="tnum"<?= $stat['throttled'] ? ' style="color:#b42318"' : '' ?>><?= number_format($stat['throttled']) ?></div><div class="tlbl">Rate-limited (429)</div></div>
+      <div class="tile"><div class="tnum"><?= number_format($stat['total']) ?></div><div class="tlbl">Logged all-time</div></div>
+    </section>
+
+    <div class="xsplit">
+      <div class="card">
+        <h2 style="margin:0 0 4px;font-size:15px">What is spending the quota</h2>
+        <p class="muted small" style="margin:0 0 10px">Since the window refilled<?= $win['start'] ? ' — ' . e(local_dt((string)$win['start'], 'd M, H:i')) . ' MYT' : '' ?>.</p>
+        <table class="grid"><thead><tr><th>Endpoint</th><th class="num">Calls</th><th class="num">Failed</th><th>Last call</th></tr></thead><tbody>
+        <?php if (!$byEp): ?>
+          <tr><td colspan="4" class="muted">No calls to Xero yet today.</td></tr>
+        <?php else: foreach ($byEp as $r): ?>
+          <tr>
+            <td class="mono"><?= e((string)$r['endpoint']) ?></td>
+            <td class="num"><b><?= number_format((int)$r['calls']) ?></b></td>
+            <td class="num"><?= (int)$r['failures'] ? '<span class="pill red">' . (int)$r['failures'] . '</span>' : '<span class="muted">—</span>' ?></td>
+            <td class="nowrap mono small"><?= e(local_dt((string)$r['last_at'], 'd M H:i')) ?></td>
+          </tr>
+        <?php endforeach; endif; ?>
+        </tbody></table>
+      </div>
+
+      <div class="card">
+        <h2 style="margin:0 0 10px;font-size:15px">Last 14 days <span class="muted small" style="font-weight:400">calls per calendar day (UTC) — a trend, not the quota window</span></h2>
+        <?php if (!$daily): ?>
+          <p class="muted">Nothing logged yet.</p>
+        <?php else: ?>
+          <div class="xdays">
+          <?php foreach ($daily as $d): $c = (int)$d['calls']; $hit = (int)$d['throttled'] > 0; ?>
+            <div class="xday" title="<?= e((string)$d['day']) ?> · <?= number_format($c) ?> calls<?= $hit ? ', hit the limit' : '' ?>">
+              <div class="xdbar"><span class="<?= $hit ? 'hit' : '' ?>" style="height:<?= $maxDay ? max(4, (int)round($c / $maxDay * 100)) : 4 ?>%"></span></div>
+              <div class="small mono"><?= number_format($c) ?></div>
+              <div class="muted small"><?= e(substr((string)$d['day'], 8, 2) . '/' . substr((string)$d['day'], 5, 2)) ?></div>
+            </div>
+          <?php endforeach; ?>
+          </div>
+          <p class="muted small" style="margin:10px 0 0">A red bar is a day that ran into a Xero limit.</p>
+        <?php endif; ?>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 style="margin:0 0 4px;font-size:15px">Recent calls</h2>
+      <p class="muted small" style="margin:0 0 12px">Newest first, last 200 · Malaysia time (UTC+8). "Headers" shows every <span class="mono">x-</span> header Xero returned on that call.</p>
+      <div class="tablewrap">
+      <table class="grid"><thead><tr>
+        <th>When</th><th>Call</th><th class="num">Status</th><th class="num">Time</th>
+        <th class="num" title="X-DayLimit-Remaining">Day left</th>
+        <th class="num" title="X-MinLimit-Remaining">Min left</th>
+        <th class="num" title="X-AppMinLimit-Remaining">App left</th>
+        <th>Note</th>
+      </tr></thead><tbody>
+      <?php if (!$rows): ?>
+        <tr><td colspan="8" class="muted">No Xero calls logged yet — they appear here as soon as the app talks to Xero.</td></tr>
+      <?php else: foreach ($rows as $r):
+        $hdrs = $r['headers_json'] ? json_decode((string)$r['headers_json'], true) : null;
+        $code = (int)$r['http_code'];
+        $tone = $code === 429 ? 'red' : ((int)$r['ok'] ? 'green' : 'amber');
+      ?>
+        <tr<?= (int)$r['ok'] ? '' : ' class="bad"' ?>>
+          <td class="nowrap mono small"><?= e(local_dt((string)$r['ts'], 'd M H:i:s')) ?></td>
+          <td><span class="pill gray"><?= e((string)$r['method']) ?></span> <span class="mono"><?= e((string)$r['endpoint']) ?></span>
+            <?php if ($hdrs): ?><button type="button" class="hdrbtn" onclick="var n=this.closest('tr').nextElementSibling;n.hidden=!n.hidden">headers</button><?php endif; ?>
+          </td>
+          <td class="num"><span class="pill <?= $tone ?>"><?= $code ?: 'ERR' ?></span></td>
+          <td class="num muted small"><?= (int)$r['duration_ms'] ? (int)$r['duration_ms'] . ' ms' : '—' ?></td>
+          <td class="num mono"><?= $r['day_limit_remaining'] === null ? '<span class="muted">—</span>' : number_format((int)$r['day_limit_remaining']) ?></td>
+          <td class="num mono"><?= $r['min_limit_remaining'] === null ? '<span class="muted">—</span>' : (int)$r['min_limit_remaining'] ?></td>
+          <td class="num mono"><?= $r['app_min_limit_remaining'] === null ? '<span class="muted">—</span>' : number_format((int)$r['app_min_limit_remaining']) ?></td>
+          <td class="small">
+            <?php if (($r['limit_problem'] ?? '') !== ''): ?>
+              <span class="pill red"><?= e((string)$r['limit_problem']) ?> limit</span>
+              <?php if ($r['retry_after'] !== null): ?><span class="muted"> retry in <?= number_format((int)$r['retry_after']) ?>s</span><?php endif; ?>
+            <?php elseif ((int)$r['ok']): ?><span class="muted">OK</span>
+            <?php else: ?><span class="muted">HTTP <?= $code ?></span><?php endif; ?>
+          </td>
+        </tr>
+        <?php if ($hdrs): ?>
+        <tr hidden class="hdrrow"><td colspan="8"><div class="hdrs mono small">
+          <?php foreach ($hdrs as $k => $v): ?><div><span class="muted"><?= e((string)$k) ?>:</span> <?= e((string)$v) ?></div><?php endforeach; ?>
+        </div></td></tr>
+        <?php endif; ?>
+      <?php endforeach; endif; ?>
+      </tbody></table>
+      </div>
+    </div>
+    <?php
 }
 
 function render_access_log(): void {
@@ -1716,7 +1899,7 @@ function ai_js(): string {
   const countsBox = document.getElementById('aicounts');
   const counts = {};
   document.querySelectorAll('#aicounts [data-pulse]').forEach(el => { counts[el.dataset.pulse] = el; });
-  const ICON = {ok:'✓', err:'!', pending:'…'};
+  const ICON = {ok:'✓', err:'!', pending:'…', skip:'–'};   // skip = nothing was sent, so nothing is pending
   let seen = null, busy = false;
 
   const key = ev => (ev.at||'')+'|'+(ev.title||'')+'|'+((ev.steps&&ev.steps[3]&&ev.steps[3].text)||'');
@@ -2111,6 +2294,7 @@ body.login{display:flex;align-items:center;justify-content:center;min-height:100
 .aiempty{color:var(--mut);font-size:13px;padding:18px 0;text-align:center}
 .aiev{border:1px solid var(--line);border-left:3px solid var(--gray);border-radius:10px;padding:10px 12px;background:#fff}
 .aiev.ok{border-left-color:var(--do)}.aiev.err{border-left-color:var(--red)}.aiev.pending{border-left-color:var(--amber)}
+.aiev.skip{border-left-color:var(--gray)}.aiev.skip .aiev-steps{opacity:.85}
 .aiev.fresh{animation:aiflash .9s ease-out}
 @keyframes aiflash{0%{background:#eff6ff;transform:translateY(-4px)}100%{background:#fff;transform:none}}
 .aiev-h{display:flex;align-items:center;gap:8px;font-size:13.5px}
@@ -2118,6 +2302,7 @@ body.login{display:flex;align-items:center;justify-content:center;min-height:100
 .aiev-h time{color:var(--mut);font-size:11.5px;white-space:nowrap}
 .aibadge{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;font-size:11px;font-weight:800;color:#fff;background:var(--gray)}
 .aibadge.ok{background:var(--do)}.aibadge.err{background:var(--red)}.aibadge.pending{background:var(--amber);color:#3a2b06}
+.aibadge.skip{background:var(--gray);color:#fff}
 .aiev-steps{margin-top:8px;display:flex;flex-direction:column;gap:4px;padding-left:2px}
 .aistep{display:flex;align-items:flex-start;gap:8px;font-size:12.5px;color:var(--ink);opacity:0;transform:translateY(3px);transition:opacity .35s,transform .35s}
 .aistep.show{opacity:1;transform:none}
@@ -2286,12 +2471,14 @@ body.login{display:flex;align-items:center;justify-content:center;min-height:100
 .dash .console .aiev.ok{border-left-color:var(--do)}
 .dash .console .aiev.err{border-left-color:#dc2626}
 .dash .console .aiev.pending{border-left-color:#d97706}
+.dash .console .aiev.skip{border-left-color:#94a3b8}
 .dash .console .aiev-h b{color:var(--ink);font-weight:600}
 .dash .console .aiev-h time{color:#94a3b8;font:600 10.5px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.06em;text-transform:uppercase}
 .dash .console .aibadge{background:#cbd5e1;font-size:10.5px;color:#fff}
 .dash .console .aibadge.ok{background:var(--do)}
 .dash .console .aibadge.err{background:#dc2626}
 .dash .console .aibadge.pending{background:#d97706;color:#fff}
+.dash .console .aibadge.skip{background:#94a3b8;color:#fff}
 .dash .console .aiev-steps{position:relative;padding-left:0;margin-top:9px;gap:6px}
 .dash .console .aiev-steps:before{content:"";position:absolute;left:3px;top:10px;bottom:10px;width:1px;background:#dbe3f2}
 .dash .console .aistep{color:#48546f;font-size:12.4px}
@@ -2359,4 +2546,26 @@ body.login{display:flex;align-items:center;justify-content:center;min-height:100
 @media(prefers-reduced-motion:reduce){
   .dash *,.dash *:before,.dash *:after{animation:none!important;transition:none!important}
 }
+
+/* Xero API log */
+.xbuds{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+.xbud{border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.xbud .tnum{font-size:24px;margin-top:2px}
+.xbud.red .tnum{color:var(--red)} .xbud.amber .tnum{color:var(--amber)}
+.xbar{height:6px;border-radius:20px;background:#eef1f6;overflow:hidden;margin:8px 0 6px}
+.xbar span{display:block;height:100%;border-radius:20px;background:var(--green)}
+.xbud.amber .xbar span{background:var(--amber)} .xbud.red .xbar span{background:var(--red)}
+.xbud.gray .xbar span{background:var(--gray)}
+.xsplit{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start}
+.xsplit>.card{margin-bottom:16px}
+.xdays{display:flex;gap:6px;align-items:flex-end}
+.xday{flex:1;max-width:56px;text-align:center;min-width:0}
+.xdbar{height:96px;display:flex;align-items:flex-end;justify-content:center}
+.xdbar span{display:block;width:72%;border-radius:4px 4px 0 0;background:var(--accent);opacity:.85}
+.xdbar span.hit{background:var(--red)}
+.hdrbtn{background:none;border:0;padding:0 0 0 6px;color:var(--accent);cursor:pointer;font:inherit;font-size:11.5px;text-decoration:underline}
+table.grid tbody tr.bad td{background:#fffbfa}
+table.grid tbody tr.hdrrow td{background:#f8fafc}
+.hdrs{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:2px 16px;padding:4px 0}
+@media(max-width:980px){.xbuds,.xsplit{grid-template-columns:1fr}}
 </style><?php }

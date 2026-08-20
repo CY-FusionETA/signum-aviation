@@ -54,6 +54,7 @@ PO before booking the bill.
 | `XeroApiClient.php` | Live client — resolves the client→Xero ContactID, builds the `PurchaseOrders` payload, POSTs it as DRAFT. `buildOrderPayload()` is pure (shared with the stub). |
 | `XeroStubClient.php` | Dry-run client used when Xero isn't connected — returns the exact payload it *would* send. |
 | `XeroClientFactory.php` | Returns the live client when enabled + configured + connected, else the stub. |
+| `XeroCallLog.php` | Queryable Xero call log (`xero_api_calls`) behind the superadmin **API log** view: calls per UTC day against Xero's 5000/org/day allowance, spend by endpoint, and the remaining budget from `X-DayLimit-Remaining` / `X-MinLimit-Remaining` / `X-AppMinLimit-Remaining`. `XeroOAuth::http()` writes every call here *and* to `storage/logs/xero-calls.log` (the raw append-only trail). |
 
 ### Inbox intake (`src/Service/Inbox/`)
 Supplier invoices arrive by email: a Gmail Apps Script drops each attachment on
@@ -103,3 +104,6 @@ which lands back on `/wazzup/webhook`. The Inbox tab is that pipeline's log.
   PO creation are never public.
 - Xero tokens live in SQLite (`oauth_tokens`), not in the repo. `config/config.php` and
   `storage/` are git-ignored.
+- Two views are superadmin-only (`Users::canViewAccessLog` / `canViewApiLog`): the
+  **Access log** and the **API log**. Both hide their nav link and fall back to the
+  dashboard when someone else asks for them by URL.
