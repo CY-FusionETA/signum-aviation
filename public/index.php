@@ -329,6 +329,24 @@ if ($path === '/xero/disconnect' && $method === 'POST') {
     csrf_check(); XeroOAuth::disconnect(); $_SESSION['flash_ok'] = 'Disconnected from Xero.'; redirect('/?view=settings');
 }
 
+// --- blank LEON import template (same columns the parser reads) -----
+if ($path === '/import/template') {
+    // Header names match the LEON "Flight Count" export; the parser maps by
+    // header name, so the column order here is a convenience, not a contract.
+    // Header only — no sample row, so an unedited template imports nothing.
+    $rows = [
+        ['Start date', 'End date', 'Trip number', 'Client name', 'Aircraft', 'Route ICAO', 'Flights count'],
+    ];
+    header('Content-Type: text/csv; charset=utf-8');
+    header('Content-Disposition: attachment; filename="leon-import-template.csv"');
+    header('Cache-Control: no-store');
+    $out = fopen('php://output', 'w');
+    fwrite($out, "\xEF\xBB\xBF");                 // BOM so Excel keeps the dd-mm-yyyy text
+    foreach ($rows as $r) fputcsv($out, $r, ',', '"', '');
+    fclose($out);
+    exit;
+}
+
 // --- import one or more LEON exports into the master list -----------
 if ($path === '/import' && $method === 'POST') {
     csrf_check();
@@ -994,6 +1012,11 @@ function render_trips(array $trips, bool $connected, string $tenant): void {
             <option value="ltd">Signum Aviation Ltd</option>
           </select></div>
           <button class="btn primary" type="submit">Import</button>
+          <span class="spacer"></span>
+          <a class="btn ghost" href="<?= e(base()) ?>/import/template" download>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            Download template
+          </a>
         </div>
       </form>
     </section>
@@ -1933,7 +1956,7 @@ input[type=checkbox]{width:auto}
 .filechip em{color:var(--mut);font-style:normal;font-size:12px}
 .fx{font-size:10.5px;font-weight:700;letter-spacing:.4px;padding:2px 7px;border-radius:6px;color:#fff;flex:none}
 .fx.csv{background:#16a34a}.fx.xlsx{background:#0f766e}.fx.pdf{background:#dc2626}
-.importrow{display:flex;gap:12px;align-items:end}.importrow .field{min-width:220px}
+.importrow{display:flex;gap:12px;align-items:end}.importrow .field{min-width:220px}.importrow .spacer{flex:1 1 auto}
 
 .toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
 .search{flex:1 1 240px;min-width:180px}
