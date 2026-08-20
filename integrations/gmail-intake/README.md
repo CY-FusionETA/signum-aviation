@@ -40,6 +40,10 @@ is a *separate* intake door; email uses this HTTP door instead.)
 
 ## Behaviour
 - Forwards every `.pdf` attachment, whatever its size (`CONFIG.ALLOWED_EXT`; the External API is PDF-only). No size floor.
+- Scans **every** email under the label, not just ones with an attachment. An email carrying no PDF is
+  reported to the Inbox once (keyed by message id) as **Not sent**, with the reason — "no attachment", or
+  the names of the files it did carry. Its thread is left unlabelled so a later reply with a real PDF is
+  still picked up. Inline images (signature logos) are not counted as attachments.
 - On success → tags the thread `skyledger-processed` (never sent twice).
 - On failure → tags `skyledger-error` and **doesn't** mark processed, so it
   retries next run once fixed. A `status:"ignored"` response means `ROUTING_PHONE`
