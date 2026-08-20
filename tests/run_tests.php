@@ -134,24 +134,41 @@ $b4 = $M::match(['description'=>'Handling charges','reference'=>'Trip 99751'], $
 check('explicit trip number in reference → matched', $b4['status'], 'matched');
 check('  → trip 99751', $b4['trip']['trip_number'] ?? '', '99751');
 
+// The tail is in LEON but no trip of that aircraft covers the date: a bill that
+// does not belong to any known trip must be handed back, not guessed at.
 $b5 = $M::match(['description'=>'Handling at EGGW on 01/01/2026 for N700LE'], $mtrips);
-check('same tail+airport, out-of-window date, 2 trips → ambiguous', $b5['status'], 'ambiguous');
+check('tail known, date outside every trip window → review', $b5['status'], 'review');
+check('  → no trip picked', $b5['trip'], null);
+check('  → reason names the tail', str_contains($b5['reason'], 'N700LE'), true);
+check('  → reason shows the date as written', str_contains($b5['reason'], '01/01/2026'), true);
 
-// Tolerant: free-form description (no standard phrasing) still matches by tail.
+// Without a trip number all three of tail/date/ICAO are required — a free-form
+// description carrying only two of them is reported, never matched on a guess.
 $b6 = $M::match(['description'=>'Ground handling services for aircraft MAL191 at Hong Kong (VHHH)'], $mtrips);
-check('free-form desc matches by tail scan', $b6['status'], 'matched');
-check('  → trip 99751 via tail', $b6['trip']['trip_number'] ?? '', '99751');
-check('  → ex_tail backfilled from trip', $b6['ex_tail'], 'MAL191');
+check('free-form desc, no flight date → review', $b6['status'], 'review');
+check('  → reason says the flight date is missing', str_contains($b6['reason'], 'flight date'), true);
+check('  → the tail it did read is still shown', $b6['ex_tail'], 'MAL191');
+check('  → and the ICAO it did read', $b6['ex_airport'], 'VHHH');
+
+// A trip number nobody has imported yet is reported as such, not silently dropped.
+$b7 = $M::match(['description'=>'Handling charges','reference'=>'Trip 12345'], $mtrips);
+check('unknown trip number → review', $b7['status'], 'review');
+check('  → reason names the missing trip', str_contains($b7['reason'], '12345'), true);
+
+// A match leaves nothing to explain.
+check('a matched bill carries no reason', $b1['reason'], '');
 
 // Manual assign overrides a review bill.
 $rev = $M::match(['description'=>'Consulting fee'], $mtrips);
 $brev = \App\Repo\BillRepo::upsert('T2', ['invoice_id'=>'rev-1','supplier'=>'X'], $rev);
 check('unmatched bill stored as review', $brev['match_status'], 'review');
+check('  → the reason is stored on the row', $brev['match_reason'] !== '', true);
 $t99 = null; foreach (TripRepo::all() as $tt) if ($tt['trip_number']==='99751') $t99 = $tt;
 \App\Service\Bills\BillReconciler::assign((int)$brev['id'], (int)$t99['id']);
 $brev2 = \App\Repo\BillRepo::findById((int)$brev['id']);
 check('manual assign sets matched trip', $brev2['matched_trip_number'], '99751');
 check('manual assign flips status to matched', $brev2['match_status'], 'matched');
+check('  → and clears the reason it no longer needs', (string)$brev2['match_reason'], '');
 
 // BillRepo persistence
 $brow = \App\Repo\BillRepo::upsert('T1', ['invoice_id'=>'inv-1','supplier'=>'ASA South China Ltd','description'=>'Ground Handling at VHHH on 30/03/2026 for MAL191'], $b1);

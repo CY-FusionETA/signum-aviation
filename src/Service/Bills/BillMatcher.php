@@ -6,119 +6,146 @@ namespace App\Service\Bills;
 /**
  * Module 3 core: match a supplier bill to a trip in the LEON master list.
  *
- * Best case the description follows the standard OCR convention
- * "<Charge> at <ICAO> on <DD/MM/YYYY> for <Tail>". But descriptions vary, so we
- * ALSO scan the whole bill text for any trip's aircraft tail and any airport on
- * its route — matching works as long as the tail (and ideally the airport/date)
- * appear anywhere. Exactly one candidate → matched; several → ambiguous; none →
- * review (resolve by hand in the UI).
+ * Two ways in, and only two:
+ *   1. The bill carries a trip number → that trip, full stop. The tail, flight
+ *      date and ICAO are not needed, and are never copied onto the bill from the
+ *      trip — what the handler wrote is what the bill keeps saying.
+ *   2. No trip number → the bill must carry ALL THREE of tail, flight date and
+ *      ICAO. Any one of them missing and the bill cannot be matched at all;
+ *      partial detail is exactly how a bill ends up on the wrong trip.
+ *
+ * Every outcome that is not a match carries a `reason` written for the person
+ * looking at the Bills tab: what was missing, or which of the three did not line
+ * up with LEON. Statuses: matched | ambiguous | review.
  */
 final class BillMatcher
 {
-    /** @return array{status:string, trip:?array, ex_airport:string, ex_date:string, ex_tail:string} */
+    /** Trips named in a reason before it falls back to a count. */
+    private const NAME_LIMIT = 3;
+
+    /** @return array{status:string, trip:?array, ex_airport:string, ex_date:string, ex_tail:string, reason:string} */
     public static function match(array $bill, array $trips): array
     {
         $text = trim(((string)($bill['description'] ?? '')) . ' ' . ((string)($bill['reference'] ?? '')));
-        $UT = strtoupper($text);
-        $NT = preg_replace('/[^A-Z0-9]/', '', $UT) ?? '';   // for tail substring hits
+        $f    = BillFields::extract($text, $trips);
 
-        // Strict standard-format extraction (used for the "Extracted" display).
-        $exAirport = ''; $exDate = ''; $exTail = '';
-        if (preg_match('/\bat\s+([A-Za-z]{4})\s+on\s+(\d{1,2}[\/-]\d{1,2}[\/-]\d{2,4})\s+for\s+([A-Za-z0-9-]+)/i', $text, $m)) {
-            $exAirport = strtoupper($m[1]);
-            $exDate    = self::iso($m[2]);
-            $exTail    = strtoupper($m[3]);
-        } else {
-            if (preg_match('/(\d{1,2}[\/-]\d{1,2}[\/-]\d{2,4})/', $text, $mm)) $exDate = self::iso($mm[1]);
-        }
-
-        $base = ['status' => 'review', 'trip' => null, 'ex_airport' => $exAirport, 'ex_date' => $exDate, 'ex_tail' => $exTail];
-
-        // 0) An explicit trip number in the text wins outright.
-        foreach ($trips as $t) {
-            $tn = (string)$t['trip_number'];
-            if ($tn !== '' && preg_match('/(?<![A-Za-z0-9])' . preg_quote($tn, '/') . '(?![A-Za-z0-9])/', $text)) {
-                return ['status' => 'matched', 'trip' => $t] + $base;
+        // 1) A trip number on the bill decides it outright.
+        if ($f['trip_number'] !== '') {
+            foreach ($trips as $t) {
+                if (strcasecmp(trim((string)$t['trip_number']), $f['trip_number']) === 0) {
+                    return self::out('matched', $t, $f, '');
+                }
             }
+            return self::out('review', null, $f, "Trip {$f['trip_number']} is on the bill, but there is no such trip in the LEON master list — import the LEON file that has it.");
         }
 
-        // 1) Candidates = trips whose aircraft tail appears anywhere in the text.
-        $cands = [];
-        foreach ($trips as $t) {
-            $nAir = preg_replace('/[^A-Z0-9]/', '', strtoupper((string)$t['aircraft'])) ?? '';
-            if ($nAir === '' || strpos($NT, $nAir) === false) continue;
-            $icao = self::routeIcaoInText((string)$t['route'], $UT);
-            $cands[] = [
-                'trip'    => $t,
-                'airport' => $icao,
-                'date'    => self::dateInWindow($exDate, (string)$t['start_date'], (string)$t['end_date']),
-            ];
-        }
-
-        if ($cands) {
-            $pick = null;
-            if (count($cands) === 1)                                 $pick = $cands[0];
-            elseif ($one = self::only($cands, fn($c) => $c['airport'] !== '' && $c['date'])) $pick = $one;
-            elseif ($one = self::only($cands, fn($c) => $c['airport'] !== ''))               $pick = $one;
-            elseif ($one = self::only($cands, fn($c) => $c['date']))                          $pick = $one;
-
-            if ($pick) {
-                $t = $pick['trip'];
-                return [
-                    'status'     => 'matched', 'trip' => $t,
-                    'ex_airport' => $exAirport ?: $pick['airport'],
-                    'ex_date'    => $exDate,
-                    'ex_tail'    => $exTail ?: strtoupper((string)$t['aircraft']),
-                ];
+        // 2) No trip number: all three details are required before we look.
+        $missing = [];
+        if ($f['tail'] === '')    $missing[] = 'aircraft tail';
+        if ($f['date'] === '')    $missing[] = 'flight date';
+        if ($f['airport'] === '') $missing[] = 'ICAO code';
+        if ($missing) {
+            $have = array_values(array_diff(['aircraft tail', 'flight date', 'ICAO code'], $missing));
+            if (!$have) {
+                return self::out('review', null, $f, 'Nothing on this bill identifies a trip — no trip number, aircraft tail, flight date or ICAO code. Key in the trip number.');
             }
-            return ['status' => 'ambiguous', 'trip' => null] + $base;
+            return self::out('review', null, $f, 'No trip number on the bill, and no ' . self::andList($missing)
+                . ' — only the ' . self::andList($have) . '. All three are needed when the trip number is absent, so key in the trip number.');
         }
 
-        // 2) No tail hit — last resort: a unique trip whose airport + date both fit.
-        $ad = [];
-        foreach ($trips as $t) {
-            $icao = self::routeIcaoInText((string)$t['route'], $UT);
-            if ($icao !== '' && self::dateInWindow($exDate, (string)$t['start_date'], (string)$t['end_date'])) $ad[] = $t;
+        $shown = self::dmy($f['date']);
+
+        // Narrow by tail, then date, then ICAO — reporting whichever step empties out.
+        $byTail = array_values(array_filter($trips, fn($t) => self::sameTail((string)($t['aircraft'] ?? ''), $f['tail'])));
+        if (!$byTail) {
+            return self::out('review', null, $f, "No trip in the LEON master list flies {$f['tail']} — check the tail on the bill, or import the LEON file for this trip.");
         }
-        if (count($ad) === 1) return ['status' => 'matched', 'trip' => $ad[0], 'ex_airport' => $exAirport ?: self::routeIcaoInText((string)$ad[0]['route'], $UT), 'ex_date' => $exDate, 'ex_tail' => $exTail];
-        if (count($ad) > 1)  return ['status' => 'ambiguous', 'trip' => null] + $base;
 
-        return $base; // review
-    }
-
-    /** @return array|null the sole element matching $pred, else null */
-    private static function only(array $items, callable $pred): ?array
-    {
-        $hit = array_values(array_filter($items, $pred));
-        return count($hit) === 1 ? $hit[0] : null;
-    }
-
-    /** First ICAO on the trip route that appears in the (uppercased) bill text, or ''. */
-    private static function routeIcaoInText(string $route, string $UT): string
-    {
-        foreach (preg_split('/\s*-\s*/', trim($route)) ?: [] as $tok) {
-            $tok = strtoupper(trim($tok));
-            if (strlen($tok) === 4 && $tok !== 'ZZZZ' && strpos($UT, $tok) !== false) return $tok;
+        $onDate = array_values(array_filter($byTail, fn($t) => self::dateInWindow($f['date'], (string)$t['start_date'], (string)$t['end_date'])));
+        if (!$onDate) {
+            return self::out('review', null, $f, "{$f['tail']} is in LEON, but none of its trips covers {$shown} — " . self::windows($byTail) . '.');
         }
-        return '';
+
+        $onRoute = array_values(array_filter($onDate, fn($t) => in_array($f['airport'], BillFields::routeIcaos((string)$t['route']), true)));
+        if (!$onRoute) {
+            return self::out('review', null, $f, "{$f['tail']} on {$shown} is " . self::tripList($onDate) . ", but {$f['airport']} is not on " . (count($onDate) === 1 ? 'its route' : 'their routes') . ' — ' . self::routes($onDate) . '.');
+        }
+        if (count($onRoute) > 1) {
+            return self::out('ambiguous', null, $f, count($onRoute) . " LEON trips fit {$f['tail']} / {$f['airport']} / {$shown} (" . self::tripList($onRoute) . ') — key in the right trip number.');
+        }
+
+        return self::out('matched', $onRoute[0], $f, '');
     }
 
-    private static function dateInWindow(string $exDate, string $start, string $end): bool
+    /** @return array{status:string, trip:?array, ex_airport:string, ex_date:string, ex_tail:string, reason:string} */
+    private static function out(string $status, ?array $trip, array $f, string $reason): array
     {
-        if ($exDate === '' || $start === '') return false;
+        return [
+            'status'     => $status,
+            'trip'       => $trip,
+            'ex_airport' => $f['airport'],
+            'ex_date'    => $f['date'],
+            'ex_tail'    => $f['tail'],
+            'reason'     => $reason,
+        ];
+    }
+
+    /** Tails compare on letters+digits only, so "M-ABCD" and "MABCD" are one aircraft. */
+    private static function sameTail(string $a, string $b): bool
+    {
+        $n = fn(string $s) => preg_replace('/[^A-Z0-9]/', '', strtoupper(trim($s))) ?? '';
+        return $n($a) !== '' && $n($a) === $n($b);
+    }
+
+    private static function dateInWindow(string $date, string $start, string $end): bool
+    {
+        if ($date === '' || $start === '') return false;
         $end = $end !== '' ? $end : $start;
-        return $exDate >= $start && $exDate <= $end;
+        return $date >= $start && $date <= $end;
     }
 
-    /** dd/mm/yyyy or dd-mm-yyyy (or already-ISO) → yyyy-mm-dd. */
-    private static function iso(string $d): string
+    /** "trip 99751" / "trips 99751, 35528" — capped, so a reason stays readable. */
+    private static function tripList(array $trips): string
     {
-        $d = trim($d);
-        if (preg_match('/^(\d{4})-(\d{2})-(\d{2})/', $d, $m)) return "{$m[1]}-{$m[2]}-{$m[3]}";
-        if (preg_match('#^(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})$#', $d, $m)) {
-            $y = (int)$m[3]; if ($y < 100) $y += 2000;
-            return sprintf('%04d-%02d-%02d', $y, (int)$m[2], (int)$m[1]);
+        $nums = array_map(fn($t) => (string)$t['trip_number'], array_slice($trips, 0, self::NAME_LIMIT));
+        $more = count($trips) - count($nums);
+        return (count($trips) === 1 ? 'trip ' : 'trips ') . implode(', ', $nums) . ($more > 0 ? " and {$more} more" : '');
+    }
+
+    /** "trip 99751 runs 26/03–30/03/2026" for each candidate. */
+    private static function windows(array $trips): string
+    {
+        $out = [];
+        foreach (array_slice($trips, 0, self::NAME_LIMIT) as $t) {
+            $s = self::dmy((string)$t['start_date']);
+            $e = self::dmy((string)$t['end_date']);
+            $out[] = 'trip ' . $t['trip_number'] . ' runs ' . ($e !== '' && $e !== $s ? "{$s}–{$e}" : $s);
         }
-        return '';
+        $more = count($trips) - count($out);
+        return implode('; ', $out) . ($more > 0 ? "; and {$more} more" : '');
+    }
+
+    /** "trip 99751 flies VHHH - WMKK" for each candidate. */
+    private static function routes(array $trips): string
+    {
+        $out = [];
+        foreach (array_slice($trips, 0, self::NAME_LIMIT) as $t) {
+            $out[] = 'trip ' . $t['trip_number'] . ' flies ' . ((string)$t['route'] !== '' ? $t['route'] : 'no route in LEON');
+        }
+        return implode('; ', $out);
+    }
+
+    /** "a, b and c" */
+    private static function andList(array $items): string
+    {
+        if (count($items) <= 1) return (string)($items[0] ?? '');
+        $last = array_pop($items);
+        return implode(', ', $items) . ' and ' . $last;
+    }
+
+    /** ISO yyyy-mm-dd → dd/mm/yyyy for reading. */
+    private static function dmy(string $iso): string
+    {
+        return preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', trim($iso), $m) ? "{$m[3]}/{$m[2]}/{$m[1]}" : trim($iso);
     }
 }

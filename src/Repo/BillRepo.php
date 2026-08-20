@@ -62,6 +62,9 @@ final class BillRepo
             'ex_date'             => (string)($match['ex_date'] ?? ''),
             'ex_tail'             => (string)($match['ex_tail'] ?? ''),
             'match_status'        => $status,
+            // The reason belongs to an unmatched bill: once it is linked, tagged
+            // or approved there is nothing left to explain.
+            'match_reason'        => $trip ? '' : (string)($match['reason'] ?? ''),
             'matched_trip_id'     => $trip ? (int)$trip['id'] : null,
             'matched_trip_number' => $trip ? (string)$trip['trip_number'] : null,
             'matched_client'      => $trip ? (string)$trip['client_name'] : null,
@@ -83,7 +86,7 @@ final class BillRepo
         Db::q(
             "UPDATE xero_bills
                 SET matched_trip_id=?, matched_trip_number=?, matched_client=?, match_status='matched',
-                    xero_last_error=NULL, updated_at=CURRENT_TIMESTAMP
+                    match_reason='', xero_last_error=NULL, updated_at=CURRENT_TIMESTAMP
               WHERE id=?",
             [(int)$trip['id'], (string)$trip['trip_number'], (string)$trip['client_name'], $id]
         );
@@ -91,12 +94,12 @@ final class BillRepo
 
     public static function markTagged(int $id): void
     {
-        Db::q("UPDATE xero_bills SET match_status='tagged', tagged_at=CURRENT_TIMESTAMP, xero_last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", [$id]);
+        Db::q("UPDATE xero_bills SET match_status='tagged', tagged_at=CURRENT_TIMESTAMP, match_reason='', xero_last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", [$id]);
     }
 
     public static function markApproved(int $id): void
     {
-        Db::q("UPDATE xero_bills SET match_status='approved', xero_last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", [$id]);
+        Db::q("UPDATE xero_bills SET match_status='approved', match_reason='', xero_last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", [$id]);
     }
 
     /**

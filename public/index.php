@@ -1420,7 +1420,12 @@ function render_bills(bool $connected, string $tenant, string $tenantId): void {
                 <?php endif;
               endif; ?></td>
             <td class="mono" style="font-size:12px"><?= e($ex ?: '—') ?></td>
-            <td><?php if ($b['matched_trip_number']): ?><span class="mono"><?= e($b['matched_trip_number']) ?></span> <span class="muted">→ <?= e($b['matched_client'] ?: 'no client') ?></span><?php else: ?><span class="muted">—</span><?php endif; ?></td>
+            <td><?php if ($b['matched_trip_number']): ?><span class="mono"><?= e($b['matched_trip_number']) ?></span> <span class="muted">→ <?= e($b['matched_client'] ?: 'no client') ?></span>
+              <?php else: $why = trim((string)($b['match_reason'] ?? '')); ?>
+                <span class="muted">—</span>
+                <?php // Why it did not match, in the matcher's own words — hover for the whole sentence. ?>
+                <?php if ($why !== ''): ?><div class="billdesc" style="max-width:320px" title="<?= e($why) ?>"><?= e(mb_strimwidth($why, 0, 80, '…')) ?></div><?php endif; ?>
+              <?php endif; ?></td>
             <td><?= $xpill((string)($b['xero_status'] ?? '')) ?></td>
             <?php // An approval hold is shown only on hover — it is an internal switch, not a bill state. ?>
             <td<?= !empty($b['approval_hold']) ? ' title="Approval hold — refreshing will not mark this bill approved from Xero; approve it from the Trips tab"' : '' ?>><?= $bpill((string)$b['match_status']) ?><?= !empty($b['xero_last_error']) ? ' <span class="warnmark" title="'.e($b['xero_last_error']).'">!</span>' : '' ?></td>
@@ -1435,7 +1440,7 @@ function render_bills(bool $connected, string $tenant, string $tenantId): void {
               <?php else: ?>
                 <form method="post" action="<?= e(base()) ?>/bills/assign" class="assignform"
                       onsubmit="return this.trip_number.value.trim() !== '';"
-                      title="No trip found — key in the LEON trip number and it's pushed to the bill in Xero">
+                      title="<?= e(trim((string)($b['match_reason'] ?? '')) ?: 'No trip found') ?> — key in the LEON trip number and it's pushed to the bill in Xero">
                   <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>"><input type="hidden" name="id" value="<?= (int)$b['id'] ?>">
                   <input type="text" name="trip_number" list="tripnums" placeholder="Key in trip no…" autocomplete="off" required>
                   <button class="btn sm">Tag</button>
