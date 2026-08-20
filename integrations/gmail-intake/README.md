@@ -33,6 +33,16 @@ is a *separate* intake door; email uses this HTTP door instead.)
 ## Setup (Gmail side)
 1. **Gmail filter** → apply the label in `CONFIG.SOURCE_LABEL`
    (`supplier-invoices`) to supplier-invoice emails.
+   The filter should match *every* invoice email, so give it no narrowing terms —
+   no `has:attachment` (emails with nothing to send belong in the Inbox too) and no
+   subject match (a supplier who does not write "Invoice" would be dropped in silence).
+   Gmail insists on at least one condition, so use **To: `<the mailbox address>`** —
+   it matches everything delivered there. (A `Doesn't have:` some-nonsense-string
+   condition works as a catch-all too, but reads like a trick.)
+   **Or skip filters entirely:** set `CONFIG.SOURCE_LABEL` to `''` and the whole
+   inbox is scanned. That suits a mailbox nothing but invoices arrives at. The cost
+   is the override: with no source label there is no way to hand one specific email
+   to the poller, and no filter to switch off to stop it.
 2. **script.google.com** → new project bound to that Gmail account → paste
    `Code.gs` → fill `CONFIG` (`CHANNEL_ID`, `ROUTING_PHONE`).
 3. Run **`setup`** once (grant permissions, create labels).
@@ -40,7 +50,7 @@ is a *separate* intake door; email uses this HTTP door instead.)
 
 ## Behaviour
 - Forwards every `.pdf` attachment, whatever its size (`CONFIG.ALLOWED_EXT`; the External API is PDF-only). No size floor.
-- Scans **every** email under the label, not just ones with an attachment. An email carrying no PDF is
+- Scans **every** email in scope (the source label, or the whole inbox when it is blank), not just ones with an attachment. An email carrying no PDF is
   reported to the Inbox once (keyed by message id) as **Not sent**, with the reason — "no attachment", or
   the names of the files it did carry. Its thread is left unlabelled so a later reply with a real PDF is
   still picked up. Inline images (signature logos) are not counted as attachments.

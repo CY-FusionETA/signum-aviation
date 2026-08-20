@@ -35,7 +35,8 @@
  *     WazzOCR domain in WAZZOCR_API_BASE. The invoice's "Billed To" must name your
  *     company exactly as it appears in Xero so WazzOCR picks the right org.
  *   - Unidash config.php: drop.key set; put the SAME value in INBOX_KEY below.
- *   - Gmail filter that applies CONFIG.SOURCE_LABEL to supplier-invoice emails.
+ *   - Gmail filter that applies CONFIG.SOURCE_LABEL to supplier-invoice emails —
+ *     OR leave CONFIG.SOURCE_LABEL blank to scan the whole inbox and skip filters.
  */
 
 /**
@@ -58,6 +59,11 @@ var CONFIG = {
   INBOX_KEY: '471f2456249f2560c883cf561fec0091439af2ee8d919e5a',
 
   // Gmail label your filter puts invoices under (create the filter first).
+  // OPTIONAL — leave it '' to scan the whole inbox and skip the filter entirely.
+  // A mailbox that receives nothing but invoices does not need a label, and a
+  // Gmail filter cannot match "everything" without inventing a condition.
+  // With a label set, the label is also the only way to hand one specific email
+  // to the poller by relabelling it.
   SOURCE_LABEL:    'supplier-invoices',
   PROCESSED_LABEL: 'skyledger-processed',
   ERROR_LABEL:     'skyledger-error',
@@ -87,11 +93,7 @@ function run() {
   var errored   = GmailApp.getUserLabelByName(CONFIG.ERROR_LABEL);
   var props     = PropertiesService.getScriptProperties();
 
-  // No 'has:attachment' filter: an email with nothing to send still belongs in the
-  // Inbox, saying why, rather than disappearing without trace.
-  var query   = 'label:' + CONFIG.SOURCE_LABEL + ' -label:' + CONFIG.PROCESSED_LABEL +
-                ' newer_than:' + CONFIG.SCAN_DAYS + 'd';
-  var threads = GmailApp.search(query, 0, CONFIG.MAX_THREADS_PER_RUN);
+  var threads = GmailApp.search(searchQuery_(), 0, CONFIG.MAX_THREADS_PER_RUN);
   if (threads.length) Logger.log('Scanning %s new thread(s)', threads.length);
 
   pingHeartbeat_();   // tell the Inbox the poller ran, even on idle minutes
@@ -182,6 +184,18 @@ function run() {
       thread.removeLabel(errored);
     }
   });
+}
+
+/**
+ * What the poller looks at. Scoped to CONFIG.SOURCE_LABEL when there is one, and
+ * to the whole inbox when there is not.
+ *
+ * There is deliberately no 'has:attachment' term: an email with nothing to send
+ * still belongs in the Inbox, saying why, rather than vanishing without trace.
+ */
+function searchQuery_() {
+  var scope = CONFIG.SOURCE_LABEL ? 'label:' + CONFIG.SOURCE_LABEL : 'in:inbox';
+  return scope + ' -label:' + CONFIG.PROCESSED_LABEL + ' newer_than:' + CONFIG.SCAN_DAYS + 'd';
 }
 
 /** Stable key for one attachment: message id + size + name. */
@@ -377,7 +391,7 @@ function seedProcessed() {
   ensureLabels_();
   var props     = PropertiesService.getScriptProperties();
   var processed = GmailApp.getUserLabelByName(CONFIG.PROCESSED_LABEL);
-  var threads   = GmailApp.search('label:' + CONFIG.SOURCE_LABEL + ' has:attachment', 0, 200);
+  var threads   = GmailApp.search(searchQuery_(), 0, 200);
   var n = 0;
   threads.forEach(function (thread) {
     thread.getMessages().forEach(function (msg) {
@@ -405,11 +419,14 @@ function resetProcessed() {
 /** Create the labels (run once, grants permissions). */
 function setup() {
   ensureLabels_();
-  Logger.log('Labels ready. Make a Gmail filter that applies "%s" to invoice emails.', CONFIG.SOURCE_LABEL);
+  Logger.log(CONFIG.SOURCE_LABEL
+    ? 'Labels ready. Make a Gmail filter that applies "' + CONFIG.SOURCE_LABEL + '" to invoice emails.'
+    : 'Labels ready. No source label set — the whole inbox is scanned, no Gmail filter needed.');
 }
 
 function ensureLabels_() {
   [CONFIG.SOURCE_LABEL, CONFIG.PROCESSED_LABEL, CONFIG.ERROR_LABEL].forEach(function (n) {
+    if (!n) return;                                    // SOURCE_LABEL is optional
     if (!GmailApp.getUserLabelByName(n)) GmailApp.createLabel(n);
   });
 }
