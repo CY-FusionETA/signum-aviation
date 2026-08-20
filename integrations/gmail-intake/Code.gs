@@ -53,7 +53,6 @@ var CONFIG = {
   ERROR_LABEL:     'skyledger-error',
 
   ALLOWED_EXT: ['pdf'],       // the External API is PDF-only
-  MIN_BYTES:   1024,          // skip tiny inline PDFs; a real text-only invoice can be ~2 KB
   MAX_THREADS_PER_RUN: 20,
   SCAN_DAYS:   3,             // only scan threads active in the last N days (Gmail quota saver)
 
@@ -164,9 +163,9 @@ function attKey_(msg, att) {
   return 'att_' + msg.getId() + '_' + att.getSize() + '_' + (att.getName() || '');
 }
 
-/** Should this attachment be sent? PDF only, above the tiny-file floor. */
+/** Should this attachment be sent? PDF only — no size floor, any size goes. */
 function isForwardable_(att) {
-  if (att.getSize() < CONFIG.MIN_BYTES) return false;
+  if (att.getSize() <= 0) return false;      // an empty part has nothing to OCR
   var name = (att.getName() || '').toLowerCase();
   var ext  = name.indexOf('.') >= 0 ? name.split('.').pop() : '';
   return CONFIG.ALLOWED_EXT.indexOf(ext) >= 0;

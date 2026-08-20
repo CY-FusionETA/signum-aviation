@@ -32,7 +32,7 @@ function debugScan() {
 
 | Line says | Meaning | Fix |
 |---|---|---|
-| `forwardable=false` | Not a `.pdf` by filename, or under the `CONFIG.MIN_BYTES` floor | Re-send as a real PDF attachment |
+| `forwardable=false` | Not a `.pdf` by filename (there is no size floor — any size is sent) | Re-send as a real PDF attachment |
 | `done=true` | Already recorded as processed in **this project's** Script Properties | Run `resetProcessed`, then `run` |
 | `waitUntil=<number>` | Held by the blocked-duplicate backoff (Xero could not clear the old bill yet) | Wait for that time, or run `resetProcessed` |
 | no `MSG` line at all | The search found nothing — this project is signed in to the wrong Google account | Open the project from the invoice mailbox account |

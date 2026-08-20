@@ -39,7 +39,7 @@ is a *separate* intake door; email uses this HTTP door instead.)
 4. Run **`installTrigger`** once (polls every 5 minutes). Use **`run`** to test.
 
 ## Behaviour
-- Forwards only `pdf/png/jpg/jpeg/webp/tif` over 8 KB (skips signature/logo images).
+- Forwards every `.pdf` attachment, whatever its size (`CONFIG.ALLOWED_EXT`; the External API is PDF-only). No size floor.
 - On success → tags the thread `skyledger-processed` (never sent twice).
 - On failure → tags `skyledger-error` and **doesn't** mark processed, so it
   retries next run once fixed. A `status:"ignored"` response means `ROUTING_PHONE`
