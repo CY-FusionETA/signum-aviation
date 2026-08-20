@@ -578,6 +578,29 @@ check('stats: bills created (success)', $ist['created'], 1);
 check('stats: errors (failed result + failed send)', $ist['errors'], 2);
 check('stats: awaiting result', $ist['pending'], 0);
 
+// An email the poller had nothing to send for is still recorded — the Inbox is a
+// log of every email that arrived, not only the ones that produced a bill.
+$skipMsg = 'Nothing sent — this email has no attachment.';
+$idS = $IL::recordDelivery(['event_at'=>'2026-08-13T01:07:00Z','sender'=>'ops@asa.com','subject'=>'Re: thanks','attachment'=>'','delivery'=>'skipped','delivery_error'=>$skipMsg]);
+$rowS = \App\Db::one("SELECT * FROM inbox_events WHERE id=?", [$idS]);
+check('email with no attachment is recorded', $rowS !== null, true);
+check('  → never pending, no reply is coming', (string)$rowS['ocr_status'], '');
+check('  → the reason is what the Inbox shows', $IL::plainMessage($rowS), $skipMsg);
+check('  → it appears in the Inbox list', count($IL::rows()), 4);
+$ist2 = $IL::stats();
+check('  → not counted as an error', $ist2['errors'], $ist['errors']);
+check('  → not counted as sent for processing', $ist2['day'], $ist['day']);
+
+// A non-PDF attachment is named on the row, so the operator sees what did arrive.
+$jpgMsg = 'Nothing sent — the processor reads PDF only, and this email attached scan.jpg.';
+$idJ = $IL::recordDelivery(['event_at'=>'2026-08-13T01:08:00Z','sender'=>'ops@asa.com','attachment'=>'scan.jpg','delivery'=>'skipped','delivery_error'=>$jpgMsg]);
+check('non-PDF attachment named on the row', \App\Db::one("SELECT attachment FROM inbox_events WHERE id=?", [$idJ])['attachment'], 'scan.jpg');
+check('  → reason names the file too', $IL::plainMessage(\App\Db::one("SELECT * FROM inbox_events WHERE id=?", [$idJ])), $jpgMsg);
+
+// And a skipped row must never sit in the reply queue stealing a real result.
+$idR = $IL::recordDelivery(['event_at'=>'2026-08-13T01:09:00Z','attachment'=>'real.pdf','delivery'=>'sent']);
+check('a real send still gets the next reply', $IL::recordReply('wz-s1', $succ, 'Bot', '2026-08-13T01:10:00Z')['row_id'], $idR);
+
 // --- 17. Inbox: two-message replies + the match window ----------------
 // The processor sends the analysis first, then the create confirmation. The
 // analysis must NOT close the row, or the confirmation lands on the next

@@ -22,7 +22,8 @@
  * DEDUPE IS PER ATTACHMENT (not per thread). An attachment that WazzOCR has
  * returned a verdict for (HTTP 200) is recorded in Script Properties by
  * (message id + size + name) and never sent again. A transport failure (network /
- * 401 / 500) is NOT recorded, so it's retried on the next run.
+ * 401 / 500) is NOT recorded, so it's retried on the next run. An email with no
+ * PDF to send is reported to the Inbox once, keyed by message id alone.
  *
  * ONE-TIME after pasting: run `setup` once (grant perms, create labels), then
  * `seedProcessed` once (marks existing invoices done without sending), then
@@ -77,8 +78,10 @@ function run() {
   var errored   = GmailApp.getUserLabelByName(CONFIG.ERROR_LABEL);
   var props     = PropertiesService.getScriptProperties();
 
+  // No 'has:attachment' filter: an email with nothing to send still belongs in the
+  // Inbox, saying why, rather than disappearing without trace.
   var query   = 'label:' + CONFIG.SOURCE_LABEL + ' -label:' + CONFIG.PROCESSED_LABEL +
-                ' has:attachment newer_than:' + CONFIG.SCAN_DAYS + 'd';
+                ' newer_than:' + CONFIG.SCAN_DAYS + 'd';
   var threads = GmailApp.search(query, 0, CONFIG.MAX_THREADS_PER_RUN);
   if (threads.length) Logger.log('Scanning %s new thread(s)', threads.length);
 
@@ -89,8 +92,22 @@ function run() {
   threads.forEach(function (thread) {
     var anyProcessed = false, anyFailed = false;
     thread.getMessages().forEach(function (msg) {
-      msg.getAttachments().forEach(function (att) {
-        if (!isForwardable_(att)) return;
+      var sendable = msg.getAttachments().filter(isForwardable_);
+
+      // Nothing here we can process — a supplier who sent a photo, or just wrote a
+      // note. Record it once so the email is visible in the Inbox with the reason,
+      // and do NOT label the thread: a later reply carrying a real PDF must still
+      // be picked up.
+      if (!sendable.length) {
+        var mkey = msgKey_(msg);
+        if (!props.getProperty(mkey)) {
+          logSkipped_(msg);
+          props.setProperty(mkey, String(Date.now()));
+        }
+        return;
+      }
+
+      sendable.forEach(function (att) {
         var key = attKey_(msg, att);
         if (props.getProperty(key)) return;            // this exact attachment already done
         // Blocked on something that will not clear for a while (Xero rate limit)?
@@ -163,6 +180,11 @@ function attKey_(msg, att) {
   return 'att_' + msg.getId() + '_' + att.getSize() + '_' + (att.getName() || '');
 }
 
+/** Stable key for a whole email, for what is recorded per message not per file. */
+function msgKey_(msg) {
+  return 'msg_' + msg.getId();
+}
+
 /** Should this attachment be sent? PDF only — no size floor, any size goes. */
 function isForwardable_(att) {
   if (att.getSize() <= 0) return false;      // an empty part has nothing to OCR
@@ -205,31 +227,57 @@ function sendToWazzOCR_(att, aiPrompt) {
  *   after a duplicate was auto-cleared, so the Inbox shows "auto deleted old copy".
  */
 function logInbox_(msg, att, r, dupNote) {
-  if (!CONFIG.INBOX_URL) return;
   var reached = r.code === 200;                        // did WazzOCR return a verdict?
   var bill    = (r.json.bills && r.json.bills[0]) || {};
   var xero    = bill.xero || {};
+  postInbox_({
+    event_at:    new Date().toISOString(),
+    sender:      msg.getFrom(),
+    subject:     msg.getSubject(),
+    attachment:  att.getName(),
+    size:        String(att.getSize()),
+    status:      reached ? 'sent' : 'failed',           // delivery to WazzOCR
+    error:       reached ? '' : ('HTTP ' + r.code + ': ' + String(r.json.error || r.json.message || r.raw).slice(0, 300)),
+    // The synchronous WazzOCR result — Unidash shows this as Success / Failed.
+    result:      reached ? String(r.json.status || '') : '',   // created|duplicate|pending|empty|partial|error
+    message:     String(r.json.message || r.json.error || ''),
+    bill_id:     String(xero.invoiceId || ''),
+    bill_number: String(xero.invoiceNumber || ''),
+    dup_note:    String(dupNote || ''),                 // '' unless this is the post-duplicate remake
+  });
+}
+
+/**
+ * Report an email that carried nothing we could send, so it still shows up in the
+ * Inbox with the reason instead of being dropped in silence.
+ *
+ * Counts REAL attachments only — inline images are signature logos and tracking
+ * pixels, and including them would tell the operator that a plain text email
+ * "attached a PNG".
+ */
+function logSkipped_(msg) {
+  var names = msg.getAttachments({ includeInlineImages: false }).map(function (a) {
+    return a.getName() || '(unnamed file)';
+  });
+  postInbox_({
+    event_at:   new Date().toISOString(),
+    sender:     msg.getFrom(),
+    subject:    msg.getSubject(),
+    attachment: names.join(', '),
+    size:       '0',
+    status:     'skipped',
+    error:      names.length
+      ? 'Nothing sent — the processor reads PDF only, and this email attached ' + names.join(', ') + '.'
+      : 'Nothing sent — this email has no attachment.',
+  });
+}
+
+/** POST one row to the Unidash Inbox. Never throws: logging must not stop a send. */
+function postInbox_(payload) {
+  if (!CONFIG.INBOX_URL) return;
+  payload.key = CONFIG.INBOX_KEY;
   try {
-    UrlFetchApp.fetch(CONFIG.INBOX_URL, {
-      method: 'post',
-      muteHttpExceptions: true,
-      payload: {
-        key:         CONFIG.INBOX_KEY,
-        event_at:    new Date().toISOString(),
-        sender:      msg.getFrom(),
-        subject:     msg.getSubject(),
-        attachment:  att.getName(),
-        size:        String(att.getSize()),
-        status:      reached ? 'sent' : 'failed',       // delivery to WazzOCR
-        error:       reached ? '' : ('HTTP ' + r.code + ': ' + String(r.json.error || r.json.message || r.raw).slice(0, 300)),
-        // The synchronous WazzOCR result — Unidash shows this as Success / Failed.
-        result:      reached ? String(r.json.status || '') : '',   // created|duplicate|pending|empty|partial|error
-        message:     String(r.json.message || r.json.error || ''),
-        bill_id:     String(xero.invoiceId || ''),
-        bill_number: String(xero.invoiceNumber || ''),
-        dup_note:    String(dupNote || ''),             // '' unless this is the post-duplicate remake
-      },
-    });
+    UrlFetchApp.fetch(CONFIG.INBOX_URL, { method: 'post', muteHttpExceptions: true, payload: payload });
   } catch (e) {
     Logger.log('Inbox log failed: %s', e);
   }

@@ -708,9 +708,14 @@ function render_inbox(): void {
     $s    = InboxLog::stats();
     $rows = InboxLog::rows(200);
     $last = local_dt(InboxLog::lastRun(), 'd M Y H:i');
-    $dpill = fn(string $d) => $d === 'sent'
-        ? '<span class="pill green">Sent</span>'
-        : ($d === 'failed' ? '<span class="pill red">Failed</span>' : '<span class="muted">—</span>');
+    $dpill = function (string $d): string {
+        if ($d === 'sent')    return '<span class="pill green">Sent</span>';
+        if ($d === 'failed')  return '<span class="pill red">Failed</span>';
+        // Nothing was sent and nothing went wrong with the mailbox — the email
+        // just had no PDF on it. The Message column says which.
+        if ($d === 'skipped') return '<span class="pill amber" title="This email arrived but carried nothing the processor could read">Not sent</span>';
+        return '<span class="muted">—</span>';
+    };
     // The bill a cleared duplicate ended up producing lives on its re-send row, so
     // the original can still link to it.
     $retryBill = [];
@@ -763,14 +768,15 @@ function render_inbox(): void {
         <a class="btn ghost sm" href="<?= e(base()) ?>/?view=inbox" title="Reload the log — new sends and processor replies arrive continuously">Refresh</a>
       </div>
       <p class="muted" style="margin:0 0 12px">
-        Every invoice the mailbox sends for processing. Hover a message to read the full reply. Duplicates are cleared and re-sent automatically.
+        Every email that reaches the invoice mailbox — including the ones with no PDF to process, which say so in Message.
+        Hover a message to read the full reply. Duplicates are cleared and re-sent automatically.
         <?= $last !== '' ? ' · <b>Last checked</b> ' . e($last) : '' ?> · times are Malaysia time (UTC+8).
       </p>
       <table class="grid"><thead><tr>
         <th>When</th><th>Sender</th><th>Attachment</th><th>Processed</th><th>Bill created</th><th>Message</th>
       </tr></thead><tbody>
       <?php if (!$rows): ?>
-        <tr><td colspan="6" class="muted">Nothing yet — entries appear here as invoice emails arrive and are sent for processing.</td></tr>
+        <tr><td colspan="6" class="muted">Nothing yet — every email that arrives in the invoice mailbox appears here.</td></tr>
       <?php else: foreach ($rows as $r):
         $when = local_dt($r['event_at'] ?: ($r['ts'] ?? ''), 'd M Y');
         $tm   = local_dt($r['event_at'] ?: ($r['ts'] ?? ''), 'H:i');
@@ -792,7 +798,9 @@ function render_inbox(): void {
           <td class="nowrap mono"><?= e($when ?: '—') ?><div class="muted small"><?= e($tm) ?></div></td>
           <td><?php $sn = trim((string)($r['sender'] ?? '')); if ($sn !== ''): ?><span class="trunc" style="max-width:210px" title="<?= e($sn) ?>"><?= e($sn) ?></span><?php else: ?><span class="muted">—</span><?php endif; ?></td>
           <td>
-            <?php if (($r['attachment'] ?? '') !== ''): ?><span class="mono trunc" style="font-size:12px;max-width:230px" title="<?= e((string)$r['attachment']) ?>"><?= e((string)$r['attachment']) ?></span><?php else: ?><span class="muted">—</span><?php endif; ?>
+            <?php if (($r['attachment'] ?? '') !== ''): ?><span class="mono trunc" style="font-size:12px;max-width:230px" title="<?= e((string)$r['attachment']) ?>"><?= e((string)$r['attachment']) ?></span>
+            <?php elseif ((string)($r['delivery'] ?? '') === 'skipped'): ?><span class="muted small">no attachment</span>
+            <?php else: ?><span class="muted">—</span><?php endif; ?>
             <?php if ($retryOf): ?><div class="muted small" title="Unidash cleared the duplicate bill in Xero and sent this file again by itself">↻ sent again automatically</div><?php endif; ?>
           </td>
           <td><?= $dpill((string)($r['delivery'] ?? '')) ?></td>

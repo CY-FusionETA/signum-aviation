@@ -13,6 +13,10 @@ use App\Settings;
  *   - recordDelivery(): the Gmail poller reports each attachment it sent for
  *     processing (who/when/what + whether the hand-off succeeded). A delivered
  *     attachment starts as ocr_status='pending'.
+ *     An email the poller had nothing to send for (no PDF attached) arrives the
+ *     same way with delivery='skipped' and the reason in delivery_error, so the
+ *     Inbox is a record of every email that arrived, not only the ones that
+ *     produced a bill.
  *   - recordReply(): the processor's WhatsApp result arrives via the Wazzup
  *     webhook. Its text is classified success|failed|note (progress pings and
  *     other chatter classify as 'ignore' and are dropped), the Xero bill link +
@@ -389,7 +393,11 @@ final class InboxLog
               . " THEN datetime('now','-" . self::SILENT_WINDOW_MINUTES . " minutes')"
               . " ELSE datetime('now','-" . self::MATCH_WINDOW_HOURS . " hours') END)";
         return [
-            'day'     => (int)Db::scalar("SELECT COUNT(*) FROM inbox_events WHERE source='gmail' AND ts >= datetime('now','-1 day')"),
+            // "Sent" means sent for processing. An email we deliberately sent
+            // nothing for is listed below, but must not be counted here.
+            'day'     => (int)Db::scalar("SELECT COUNT(*) FROM inbox_events
+                                           WHERE source='gmail' AND ts >= datetime('now','-1 day')
+                                             AND COALESCE(delivery,'') <> 'skipped'"),
             'created' => (int)Db::scalar("SELECT COUNT(*) FROM inbox_events WHERE ocr_status='success'"),
             // A duplicate the app cleared by itself is not an error: the old copy is
             // gone and the invoice went back through the processor on its own.
